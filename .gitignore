@@ -6,6 +6,7 @@ black_smash_07/
 mvt_frames/
 mvt_keyframes/
 mvt_panels/
+mvt_verify/
 
 # ---- local tooling / caches ----
 .claude/
