@@ -1,0 +1,14 @@
+# ---- raw dataset (huge, never commit) ----
+black_smash_07/
+*.parquet
+
+# ---- regenerable intermediate visualizations ----
+mvt_frames/
+mvt_keyframes/
+mvt_panels/
+
+# ---- local tooling / caches ----
+.claude/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

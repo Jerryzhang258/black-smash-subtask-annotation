@@ -1,0 +1,67 @@
+{
+  "episode_index": 4,
+  "task": "Pour the black powder into the mortar and grind.",
+  "n_frames": 1066,
+  "fps": 30,
+  "method": "signal-derived (state-dim3 pour deviation + carrier-drift grind)",
+  "boundaries": {
+    "b1": 169,
+    "b2": 312,
+    "b3": 661,
+    "b4": 941
+  },
+  "flags": [],
+  "n_subtasks": 5,
+  "subtasks": [
+    {
+      "subtask_id": 0,
+      "label": "reach for and grasp the powder container",
+      "start_frame": 0,
+      "end_frame": 168,
+      "start_t": 0.0,
+      "end_t": 5.6,
+      "n_frames": 169,
+      "dur_s": 5.63
+    },
+    {
+      "subtask_id": 1,
+      "label": "pour the black powder into the mortar",
+      "start_frame": 169,
+      "end_frame": 312,
+      "start_t": 5.63,
+      "end_t": 10.4,
+      "n_frames": 144,
+      "dur_s": 4.8
+    },
+    {
+      "subtask_id": 2,
+      "label": "set down the container and bring the pestle to the mortar",
+      "start_frame": 313,
+      "end_frame": 660,
+      "start_t": 10.43,
+      "end_t": 22.0,
+      "n_frames": 348,
+      "dur_s": 11.6
+    },
+    {
+      "subtask_id": 3,
+      "label": "grind the powder in the mortar",
+      "start_frame": 661,
+      "end_frame": 941,
+      "start_t": 22.03,
+      "end_t": 31.37,
+      "n_frames": 281,
+      "dur_s": 9.37
+    },
+    {
+      "subtask_id": 4,
+      "label": "lift the pestle and return to rest",
+      "start_frame": 942,
+      "end_frame": 1065,
+      "start_t": 31.4,
+      "end_t": 35.5,
+      "n_frames": 124,
+      "dur_s": 4.13
+    }
+  ]
+}
