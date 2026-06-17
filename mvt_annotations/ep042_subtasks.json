@@ -3,19 +3,29 @@
   "task": "Pour the black powder into the mortar and grind.",
   "n_frames": 1161,
   "fps": 30,
-  "method": "signal-derived (state-dim3 pour deviation + carrier-drift grind)",
-  "boundaries": {
-    "b1": 196,
-    "b2": 361,
-    "b3": 701,
-    "b4": 1034
-  },
+  "annotator": "auto-signal",
+  "method": "signal-derived (state-dim3 tube-held window + carrier-drift pour/grind)",
+  "critical_points": [
+    196,
+    247,
+    362,
+    701,
+    1035
+  ],
+  "subtask_starts": [
+    0,
+    196,
+    247,
+    362,
+    701,
+    1035
+  ],
   "flags": [],
-  "n_subtasks": 5,
+  "n_subtasks": 6,
   "subtasks": [
     {
       "subtask_id": 0,
-      "label": "reach for and grasp the powder container",
+      "label": "reach for the test tube",
       "start_frame": 0,
       "end_frame": 195,
       "start_t": 0.0,
@@ -25,17 +35,27 @@
     },
     {
       "subtask_id": 1,
-      "label": "pour the black powder into the mortar",
+      "label": "lift the test tube and move it over the mortar",
       "start_frame": 196,
-      "end_frame": 361,
+      "end_frame": 246,
       "start_t": 6.53,
-      "end_t": 12.03,
-      "n_frames": 166,
-      "dur_s": 5.53
+      "end_t": 8.2,
+      "n_frames": 51,
+      "dur_s": 1.7
     },
     {
       "subtask_id": 2,
-      "label": "set down the container and bring the pestle to the mortar",
+      "label": "pour the black powder into the mortar",
+      "start_frame": 247,
+      "end_frame": 361,
+      "start_t": 8.23,
+      "end_t": 12.03,
+      "n_frames": 115,
+      "dur_s": 3.83
+    },
+    {
+      "subtask_id": 3,
+      "label": "set down the test tube and pick up the pestle",
       "start_frame": 362,
       "end_frame": 700,
       "start_t": 12.07,
@@ -44,7 +64,7 @@
       "dur_s": 11.3
     },
     {
-      "subtask_id": 3,
+      "subtask_id": 4,
       "label": "grind the powder in the mortar",
       "start_frame": 701,
       "end_frame": 1034,
@@ -54,7 +74,7 @@
       "dur_s": 11.13
     },
     {
-      "subtask_id": 4,
+      "subtask_id": 5,
       "label": "lift the pestle and return to rest",
       "start_frame": 1035,
       "end_frame": 1160,

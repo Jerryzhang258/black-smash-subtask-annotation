@@ -1,0 +1,85 @@
+{
+  "episode_index": 0,
+  "task": "Pour the black powder into the mortar and grind.",
+  "n_frames": 1159,
+  "fps": 30,
+  "annotator": "human-gui",
+  "critical_points": [
+    116,
+    198,
+    515,
+    720,
+    1060
+  ],
+  "subtask_starts": [
+    0,
+    116,
+    198,
+    515,
+    720,
+    1060
+  ],
+  "n_subtasks": 6,
+  "subtasks": [
+    {
+      "subtask_id": 0,
+      "label": "reach for the test tube",
+      "start_frame": 0,
+      "end_frame": 115,
+      "start_t": 0.0,
+      "end_t": 3.83,
+      "n_frames": 116,
+      "dur_s": 3.87
+    },
+    {
+      "subtask_id": 1,
+      "label": "lift the test tube and move it over the mortar",
+      "start_frame": 116,
+      "end_frame": 197,
+      "start_t": 3.87,
+      "end_t": 6.57,
+      "n_frames": 82,
+      "dur_s": 2.73
+    },
+    {
+      "subtask_id": 2,
+      "label": "pour the black powder into the mortar",
+      "start_frame": 198,
+      "end_frame": 514,
+      "start_t": 6.6,
+      "end_t": 17.13,
+      "n_frames": 317,
+      "dur_s": 10.57
+    },
+    {
+      "subtask_id": 3,
+      "label": "set down the test tube and pick up the pestle",
+      "start_frame": 515,
+      "end_frame": 719,
+      "start_t": 17.17,
+      "end_t": 23.97,
+      "n_frames": 205,
+      "dur_s": 6.83
+    },
+    {
+      "subtask_id": 4,
+      "label": "grind the powder in the mortar",
+      "start_frame": 720,
+      "end_frame": 1059,
+      "start_t": 24.0,
+      "end_t": 35.3,
+      "n_frames": 340,
+      "dur_s": 11.33
+    },
+    {
+      "subtask_id": 5,
+      "label": "lift the pestle and return to rest",
+      "start_frame": 1060,
+      "end_frame": 1158,
+      "start_t": 35.33,
+      "end_t": 38.6,
+      "n_frames": 99,
+      "dur_s": 3.3
+    }
+  ]
+}

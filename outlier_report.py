@@ -11,12 +11,10 @@ THRESH = 3.5   # |modified z| above this = outlier on that feature
 docs = []
 for fp in sorted(glob.glob(os.path.join(ANN, "ep*_subtasks.json"))):
     d = json.load(open(fp))
-    N = d["n_frames"]; b = d["boundaries"]
-    durs = [s["n_frames"] / N for s in d["subtasks"]]          # S0..S4 as fraction of N
-    feat = {
-        "b1/N": b["b1"] / N, "b2/N": b["b2"] / N, "b3/N": b["b3"] / N, "b4/N": b["b4"] / N,
-        "S0%": durs[0], "S1%": durs[1], "S2%": durs[2], "S3%": durs[3], "S4%": durs[4],
-    }
+    N = d["n_frames"]; st = d["subtask_starts"]               # [0, p1..p5]
+    durs = [s["n_frames"] / N for s in d["subtasks"]]          # S0.. as fraction of N
+    feat = {f"p{i}/N": st[i] / N for i in range(1, len(st))}   # critical-point positions
+    feat.update({f"S{i}%": durs[i] for i in range(len(durs))})  # subtask duration fractions
     docs.append({"ep": d["episode_index"], "N": N, "flags": d.get("flags", []), "feat": feat})
 
 names = list(docs[0]["feat"].keys())
