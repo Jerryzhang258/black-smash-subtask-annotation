@@ -11,7 +11,9 @@ Stage 2  batch_annotate   本体 state 信号       → mvt_annotations/        
 Stage 3  annotate_gui     人工复查 GUI          → mvt_annotations_human/   定稿
 ```
 
-![ep000 故事板](mvt_annotations/ep000_storyboard.png)
+![标注可视化示例](docs/example_annotation.png)
+
+> 一条 episode 的标注可视化(`visualize_annotation.py`):顶部 7 段彩色时间线(含每段时长),下面每段一张关键帧(已 center-crop + 白平衡,试管/研钵/杵清晰可见)。
 
 **核心:每个临界点交给最擅长它的方法。** 夹爪/运动事件(p1 抓管 · p3 放管 · p4 抓杵 · p5 开始磨 · p6 抬杵)归 **state**(夹爪事件误差≈1–2 帧);视觉事件(p2 开始倒)归 **VLM**。融合时 `|VLM−state|>容差(默认 0.5s)` 的点标 `review_points`,人工只调这些。三阶段输出同一套 JSON schema,仅 `annotator` 字段不同。
 
@@ -28,6 +30,26 @@ Stage 3  annotate_gui     人工复查 GUI          → mvt_annotations_human/  
 | S4 | bring the pestle over the mortar | p4 抓到杵(夹爪闭 dim13) |
 | S5 | grind the powder in the mortar | p5 开始磨(原地运动) |
 | S6 | lift the pestle and return to rest | p6 抬杵(研磨结束) |
+
+## state 判断原理(Stage 2)
+
+完全不看画面,只从 20 维 `observation.state` 推断(暗光鱼眼相机不可靠,本体感知干净);边界用**帧序号**,与帧率无关。先算两类信号:
+
+- **夹爪开合**:双臂在 state 里 **+10 镜像** —— 试管夹=`dim3`、杵夹=`dim13`。归一化后"夹住"= 偏离静息(张开)值;`grip_window()` 取某夹爪"闭合"的**最长连续段**(`close_gaps` 桥接瞬时抖动),**段起点=抓、终点+1=放**。
+- **运动分解(关键技巧)**:非夹爪维度做位姿 P;`raw`= 逐帧速度(动多快),`carrier`= P 的 ~1s 滑动均值(慢轨迹),`drift`= carrier 速度(平移量)。**研磨 = `raw` 高但 `drift` 低**(在研钵上方原地来回振、没走位),搬运则 drift 高 —— 用这个对比干净区分"原地磨"与"搬运"(普通速度会饱和,分不出)。
+
+6 个临界点由此导出:
+
+| 临界点 | 信号依据 |
+|---|---|
+| p1 抓管 / p3 放管 | 试管夹爪(dim3)闭合窗口 `[E1,E2]` 的 起点 / 终点+1 |
+| p2 开始倒 | 握管窗口内最长"低 drift"段起点(手臂 settle 到研钵上方;*代理,偏软*) |
+| p4 抓杵 | 杵夹爪(dim13,p3 之后)闭合窗口起点 |
+| p5 开始磨 / p6 抬杵 | p4 之后 `drift 低 且 raw 高`(原地运动)最长段的 起点 / 终点+1 |
+
+**稳健性**:最长段 + 形态学桥接缺口 + 1–99 百分位归一化;任一窗口缺失或 6 点非递增 → 按比例回退并写 `flags`(当前 382 集 **0 flag**)。
+
+**强弱**(信号细查实测):夹爪事件 **p1/p3/p4 亚秒级最稳**(p3 ≈ 0.4s 误差);运动事件 **p5/p6 较稳**(p6 收尾渐变略软);**仅 p2「开始倒」真软** —— 粉末流出是视觉/手腕事件,本体信号里没有,只能代理 → 这点留给 **VLM / 人工**。
 
 ## 用法
 
@@ -58,6 +80,7 @@ python vlm_annotate.py --backend openai --model qwen --base-url http://localhost
 | `batch_annotate.py` | Stage 2 本体信号分段(7 段),写 JSON/npy/CSV |
 | `fuse_annotations.py` | 融合两版 + 按 `\|VLM−state\|` 标待复查点 |
 | `annotate_gui.py` | Stage 3 人工复查 GUI(三线对照,只停在待复查点) |
+| `visualize_annotation.py` · `zoom_boundary.py` | 可视化:时间线+关键帧(`--tile`)/ 临界点逐帧放大 |
 | `compare_timelines.py` · `outlier_report.py` · `verify_tail.py` | QA:时间线对比 / 离群检测 / 收尾核验 |
 | `analyze_subtasks.py` · `inspect_episode.py` | 诊断:单集信号 / 数据集检查 |
 
