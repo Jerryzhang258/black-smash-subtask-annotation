@@ -132,7 +132,7 @@ Data: LeRobot v2.1 bimanual, ~1049–1290 frames/episode @ 30 fps, 6 image strea
 ```bibtex
 @misc{subtask_segmentation,
   title  = {Proprioception-Grounded Subtask Segmentation for Long-Horizon Bimanual Manipulation},
-  author = {Zhang, Rongxu},
+  author = {Zhang, Rongxuan},
   year   = {2026},
   howpublished = {\url{https://github.com/Jerryzhang258/black-smash-subtask-annotation}}
 }
