@@ -43,12 +43,22 @@ TASK_DEFAULT = "Pour the black powder into the mortar and grind."
 
 
 # ---------------- frame I/O ----------------
+CROP = 0.6   # center-crop fraction: drop the useless distorted fisheye periphery (set by --crop)
+
+
 def enh(im):
+    """Make the dark/fisheye/golden frames legible: center-crop to the action,
+    gray-world white-balance (kills the orange cast), percentile stretch + gamma."""
+    if CROP < 1.0:
+        w, h = im.size; cw, ch = int(w * CROP), int(h * CROP)
+        im = im.crop(((w - cw) // 2, (h - ch) // 2, (w + cw) // 2, (h + ch) // 2))
     a = np.asarray(im).astype(np.float32)
-    lo, hi = np.percentile(a, 1), np.percentile(a, 99)
-    a = np.clip((a - lo) / (hi - lo + 1e-6), 0, 1) * 255
-    o = Image.fromarray(a.astype(np.uint8))
-    return ImageEnhance.Contrast(ImageEnhance.Color(o).enhance(1.4)).enhance(1.2)
+    m = a.reshape(-1, 3).mean(0) + 1e-6
+    a = np.clip(a * (m.mean() / m), 0, 255)            # gray-world white balance
+    lo, hi = np.percentile(a, 2), np.percentile(a, 98)
+    a = np.clip((a - lo) / (hi - lo + 1e-6), 0, 1)
+    a = (a ** 0.8) * 255                                # gamma lift
+    return ImageEnhance.Contrast(Image.fromarray(a.astype(np.uint8))).enhance(1.25)
 
 
 def label_frame(im, idx, t, size):
@@ -312,6 +322,7 @@ def main():
     ap.add_argument("--cam",  default="observation.images.camera1")
     ap.add_argument("--n-frames", type=int, default=32, dest="n_frames")
     ap.add_argument("--size", type=int, default=256, help="per-frame px sent to the model")
+    ap.add_argument("--crop", type=float, default=0.6, help="center-crop fraction (1.0 = no crop)")
     ap.add_argument("--fine", dest="fine", action="store_true", default=True)
     ap.add_argument("--no-fine", dest="fine", action="store_false")
     ap.add_argument("--fine-window-s", type=float, default=1.5, dest="fine_window_s")
@@ -320,6 +331,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
+    global CROP; CROP = args.crop
 
     task = TASK_DEFAULT
     try:
