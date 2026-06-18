@@ -91,7 +91,9 @@ COARSE_HEAD = (
     "Find these 6 critical points (transition frames). Each must be an integer "
     "frame index in [0, {T1}], and they MUST be strictly increasing:\n  "
     + "\n  ".join(CRIT_DESC) +
-    "\n\nReturn ONLY a JSON object, no prose:\n"
+    "\n\nThink step by step: FIRST, for each shown frame write one short line "
+    "'#idx: <what the robot/tube/pestle is doing>'. Use that to locate the 6 events. "
+    "THEN, on the LAST line, output ONLY the JSON object (nothing after it):\n"
     '{{"p1_grasp_tube": int, "p2_start_pour": int, "p3_release_tube": int, '
     '"p4_grasp_pestle": int, "p5_start_grind": int, "p6_lift_pestle": int, '
     '"notes": "one short sentence"}}'
@@ -138,14 +140,20 @@ def parse_fine(text, default):
 
 
 def enforce_order(cps, T, flags):
-    """Clamp into [1, T-2] and force strictly increasing by nudging."""
-    cps = [max(1, min(T - 2, c)) for c in cps]
-    for i in range(1, len(cps)):
+    """Clamp into [1, T-2] and force strictly increasing (both directions so a
+    forward nudge can't push points past the end of the episode)."""
+    cps = [max(1, min(T - 2, int(c))) for c in cps]
+    for i in range(1, len(cps)):                 # forward: strictly increasing
         if cps[i] <= cps[i - 1]:
             cps[i] = cps[i - 1] + 1
             flags.append("nudged p%d for ordering" % (i + 1))
-    if cps[-1] >= T - 1:
-        flags.append("points hit end of episode")
+    if cps[-1] > T - 2:                           # overflowed end -> pull down backward
+        cps[-1] = T - 2
+        for i in range(len(cps) - 2, -1, -1):
+            if cps[i] >= cps[i + 1]:
+                cps[i] = cps[i + 1] - 1
+        if cps[0] < 1:
+            flags.append("could not fit ordered points in episode")
     return cps
 
 
@@ -196,6 +204,41 @@ class QwenLocal:
                                             clean_up_tokenization_spaces=False)[0]
 
 
+def _to_openai(messages):
+    """Convert the Qwen-native messages (PIL images) to OpenAI chat format (base64)."""
+    import base64
+    out = []
+    for m in messages:
+        content = []
+        for c in m["content"]:
+            if c["type"] == "text":
+                content.append({"type": "text", "text": c["text"]})
+            else:
+                buf = io.BytesIO(); c["image"].save(buf, format="PNG")
+                b64 = base64.b64encode(buf.getvalue()).decode()
+                content.append({"type": "image_url",
+                                "image_url": {"url": "data:image/png;base64," + b64}})
+        out.append({"role": m["role"], "content": content})
+    return out
+
+
+class OpenAIBackend:
+    """OpenAI-compatible chat API — e.g. a local vLLM server (recommended for 7B on
+    Linux): `vllm serve <model> --served-model-name qwen` then --base-url .../v1."""
+    def __init__(self, model, base_url, api_key, max_new_tokens=512):
+        from openai import OpenAI
+        self.client = OpenAI(base_url=base_url, api_key=api_key or "EMPTY")
+        self.model = model
+        self.max_new_tokens = max_new_tokens
+        print(f"[openai] {model} @ {base_url}", flush=True)
+
+    def ask(self, messages):
+        r = self.client.chat.completions.create(
+            model=self.model, messages=_to_openai(messages),
+            max_tokens=self.max_new_tokens, temperature=0)
+        return r.choices[0].message.content
+
+
 # ---------------- per-episode ----------------
 def annotate_one(backend, parquet, out_dir, ep, task, args):
     store = FrameStore(parquet, args.cam)
@@ -210,7 +253,10 @@ def annotate_one(backend, parquet, out_dir, ep, task, args):
         open(os.path.join(out_dir, f"ep{ep:03d}_prompt.txt"), "w", encoding="utf-8").write(head)
         print(f"ep{ep:03d}: dry-run wrote montage + prompt ({len(idxs)} frames)")
         return None
-    cps, notes = parse_coarse(backend.ask(build_messages(task, store, idxs, fps, args.size, head)), T)
+    raw = backend.ask(build_messages(task, store, idxs, fps, args.size, head))
+    if os.environ.get("VLM_DEBUG"):
+        print("=== RAW coarse response ep%03d ===\n%s\n=== end ===" % (ep, raw), flush=True)
+    cps, notes = parse_coarse(raw, T)
     if cps is None:
         flags.append("coarse parse failed -> fallback proportions")
         cps = [int(p * T) for p in (0.14, 0.22, 0.34, 0.55, 0.62, 0.90)]
@@ -253,8 +299,11 @@ def montage(store, idxs, fps, out_png, cols=8, size=200):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--backend", default="qwen-local", choices=["qwen-local"])
+    ap.add_argument("--backend", default="qwen-local", choices=["qwen-local", "openai"])
     ap.add_argument("--model", default="Qwen/Qwen2.5-VL-7B-Instruct-AWQ")
+    ap.add_argument("--base-url", default="http://localhost:8000/v1", dest="base_url",
+                    help="openai backend: vLLM/OpenAI-compatible endpoint")
+    ap.add_argument("--api-key", default="EMPTY", dest="api_key")
     ap.add_argument("--data", default=r"C:\Intern\black_smash_07\data\chunk-000")
     ap.add_argument("--out",  default=r"C:\Intern\mvt_annotations_vlm")
     ap.add_argument("--meta", default=r"C:\Intern\black_smash_07\meta\tasks.jsonl")
@@ -278,7 +327,12 @@ def main():
     except Exception:
         pass
 
-    backend = None if args.dry_run else QwenLocal(args.model, args.max_new_tokens)
+    if args.dry_run:
+        backend = None
+    elif args.backend == "openai":
+        backend = OpenAIBackend(args.model, args.base_url, args.api_key, args.max_new_tokens)
+    else:
+        backend = QwenLocal(args.model, args.max_new_tokens)
 
     files = sorted(glob.glob(os.path.join(args.data, "episode_*.parquet")))
     want = set(int(x) for x in args.eps.split(",") if x.strip().isdigit()) if args.eps else None

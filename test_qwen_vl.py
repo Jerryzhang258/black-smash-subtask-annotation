@@ -79,7 +79,7 @@ def main():
                                  clean_up_tokenization_spaces=False)[0]
     print(f"[infer] {time.time()-t1:.1f}s, peak VRAM {torch.cuda.max_memory_allocated()/1e9:.1f} GB")
     print("[infer] output:", out.strip())
-    print("OK ✅")
+    print("OK")
 
 
 if __name__ == "__main__":

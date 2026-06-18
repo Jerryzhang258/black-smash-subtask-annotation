@@ -96,4 +96,4 @@ python vlm_annotate.py --dry-run --eps 0          # 无模型,只检查抽帧/pr
 
 - Stage 2 ✅ 100/100,0 flag。
 - Stage 3 ✅ GUI 就绪(6 点 / 7 段,三线对照)。
-- Stage 1 🟡 代码与安装教程就绪,待在 5080 桌机上跑模型生成 `mvt_annotations_vlm/`。
+- Stage 1 🟡 代码就绪。实测 **3B(8GB 笔记本)对暗光鱼眼画面无法定位事件**(输出等间距瞎编帧号)→ 改用 **7B**。安装教程:Windows [`docs/INSTALL_QWEN.md`](docs/INSTALL_QWEN.md);**Linux + RTX 5080 + 7B(vLLM,推荐)** [`docs/INSTALL_QWEN_LINUX.md`](docs/INSTALL_QWEN_LINUX.md)。`vlm_annotate.py` 支持 `--backend qwen-local`(transformers)与 `--backend openai`(vLLM)。

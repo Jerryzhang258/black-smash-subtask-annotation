@@ -9,6 +9,12 @@ so100_*/
 *.parquet
 download_smash.log
 
+# ---- downloaded model weights + local temp ----
+models/
+*.safetensors
+_*.log
+_*.txt
+
 # ---- regenerable intermediate visualizations ----
 mvt_frames/
 mvt_keyframes/
