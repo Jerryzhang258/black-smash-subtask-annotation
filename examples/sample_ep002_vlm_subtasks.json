@@ -1,0 +1,109 @@
+{
+  "episode_index": 2,
+  "task": "Pour the black powder into the mortar and grind.",
+  "n_frames": 1097,
+  "fps": 30,
+  "annotator": "qwen-vl",
+  "model": "qwen",
+  "method": "qwen2.5-vl coarse(32)+fine, cam=observation.images.camera1",
+  "notes": "robot lifts pestle from mortar",
+  "critical_points": [
+    102,
+    244,
+    339,
+    356,
+    480,
+    599
+  ],
+  "critical_names": [
+    "grasp_tube",
+    "start_pour",
+    "release_tube",
+    "grasp_pestle",
+    "start_grind",
+    "lift_pestle"
+  ],
+  "subtask_starts": [
+    0,
+    102,
+    244,
+    339,
+    356,
+    480,
+    599
+  ],
+  "flags": [],
+  "n_subtasks": 7,
+  "subtasks": [
+    {
+      "subtask_id": 0,
+      "label": "reach for the test tube",
+      "start_frame": 0,
+      "end_frame": 101,
+      "start_t": 0.0,
+      "end_t": 3.37,
+      "n_frames": 102,
+      "dur_s": 3.4
+    },
+    {
+      "subtask_id": 1,
+      "label": "lift the test tube and move it over the mortar",
+      "start_frame": 102,
+      "end_frame": 243,
+      "start_t": 3.4,
+      "end_t": 8.1,
+      "n_frames": 142,
+      "dur_s": 4.73
+    },
+    {
+      "subtask_id": 2,
+      "label": "pour the black powder into the mortar",
+      "start_frame": 244,
+      "end_frame": 338,
+      "start_t": 8.13,
+      "end_t": 11.27,
+      "n_frames": 95,
+      "dur_s": 3.17
+    },
+    {
+      "subtask_id": 3,
+      "label": "release the test tube and reach for the pestle",
+      "start_frame": 339,
+      "end_frame": 355,
+      "start_t": 11.3,
+      "end_t": 11.83,
+      "n_frames": 17,
+      "dur_s": 0.57
+    },
+    {
+      "subtask_id": 4,
+      "label": "bring the pestle over the mortar",
+      "start_frame": 356,
+      "end_frame": 479,
+      "start_t": 11.87,
+      "end_t": 15.97,
+      "n_frames": 124,
+      "dur_s": 4.13
+    },
+    {
+      "subtask_id": 5,
+      "label": "grind the powder in the mortar",
+      "start_frame": 480,
+      "end_frame": 598,
+      "start_t": 16.0,
+      "end_t": 19.93,
+      "n_frames": 119,
+      "dur_s": 3.97
+    },
+    {
+      "subtask_id": 6,
+      "label": "lift the pestle and return to rest",
+      "start_frame": 599,
+      "end_frame": 1096,
+      "start_t": 19.97,
+      "end_t": 36.53,
+      "n_frames": 498,
+      "dur_s": 16.6
+    }
+  ]
+}

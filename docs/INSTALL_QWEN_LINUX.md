@@ -1,131 +1,134 @@
-# 在 Linux + RTX 5080 上跑 Qwen2.5-VL-7B(Stage 1 视觉标注)
+# 在 Linux + RTX 5080 上跑 Qwen2.5-VL-7B (Stage 1 视觉标注)
 
-面向 **Linux(Ubuntu 22.04/24.04)+ NVIDIA RTX 5080(16 GB)** 跑 **Qwen2.5-VL-7B**,作为标注流水线的第 1 步(VLM 粗标)。
+面向 **Linux (Ubuntu 22.04/24.04) + NVIDIA RTX 5080 (16 GB)** 跑 **Qwen2.5-VL-7B-AWQ**，作为标注流水线第 1 步 (VLM 粗标)。
 
-> 为什么是 7B + Linux:在 8GB 笔记本上实测 **3B 无法定位事件**(暗光鱼眼画面,3B 直接输出等间距瞎编的帧号)。**7B 才有戏**;Linux 还能用 **vLLM**(批量吞吐远高于 transformers,适合 100 集)。
-> 三阶段总览见 [README](../README.md);Windows 版见 [`INSTALL_QWEN.md`](INSTALL_QWEN.md)。
+> 三阶段总览见 [README](../README.md)；Windows 版见 [`INSTALL_QWEN.md`](INSTALL_QWEN.md)。
 
-RTX 5080 是 **Blackwell(算力 `sm_120`)**,**必须 CUDA 12.8 的 PyTorch(cu128)**。16 GB 放不下 7B 全精度(~16.5 GB),用 **AWQ 4-bit(~7 GB)**。
+RTX 5080 是 **Blackwell (`sm_120`)**。实测 **vLLM 0.23 + FlashInfer 需要 CUDA ≥ 12.9**，请用 **PyTorch CUDA 13.0 (`cu130`)** 全栈，不要用文档旧版的 cu128。16 GB 显存放不下 7B 全精度，用 **AWQ 4-bit (~7 GB)**。
 
 ---
 
-## 0. 两条路线,二选一
+## 0. 两条路线
 
 | 路线 | 适合 | 说明 |
 |---|---|---|
-| **A. vLLM 服务 + openai 后端**(推荐) | 跑全部 100 集 | 吞吐高、并发好;起一个本地服务,`vlm_annotate.py --backend openai` 连它 |
-| **B. transformers 直跑** | 少量集 / 想简单 | 不起服务,`--backend qwen-local`,逐集推理,慢但省事 |
+| **A. vLLM + openai 后端** (推荐) | 跑全部 100 集 | 吞吐高；`vlm_annotate.py --backend openai` 连本地服务 |
+| **B. transformers 直跑** | 少量集 | `--backend qwen-local`，慢但省事 |
 
 ---
 
-## 1. 驱动与基础环境
+## 1. 环境
 
 ```bash
-nvidia-smi                       # 驱动需支持 CUDA ≥ 12.8;能看到 RTX 5080 即可
-sudo apt-get update && sudo apt-get install -y git git-lfs build-essential
-# Miniconda(若没有)
-# wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && bash Miniconda3-latest-Linux-x86_64.sh
+nvidia-smi   # 驱动 ≥ 572，能看到 RTX 5080
 conda create -n qwenvl python=3.11 -y
 conda activate qwenvl
-```
-> 国内 pip 加速(可选):`pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/`
-
-## 2. PyTorch(cu128,Blackwell 关键)
-
-```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-python -c "import torch;print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_capability(0))"
-# 期望: 2.x+cu128  True  (12, 0)
+pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/   # 国内可选
 ```
 
-## 3. 拉代码 + 拷数据
+## 2. PyTorch (CUDA 13.0)
 
 ```bash
-git clone https://github.com/Jerryzhang258/black-smash-subtask-annotation.git
-cd black-smash-subtask-annotation
-# 用移动硬盘把 parquet 数据拷进来,例如:
-#   black_smash_07/data/chunk-000/episode_*.parquet
-#   black_smash_07/meta/tasks.jsonl
+pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_capability(0))"
+# 期望: 2.11.0+cu130  13.0  True  (12, 0)
 ```
 
-## 4. 下载模型(AWQ 4-bit)
+> 若 `torchaudio` 报 CUDA 版本不匹配：`pip install torchaudio==2.11.0+cu128 --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps` 后，再重装 cu130 版 `torchaudio==2.11.0`。
 
-国内推荐 **ModelScope**(Qwen 官方、最快):
+## 3. vLLM + 依赖
+
 ```bash
-pip install modelscope
+pip install vllm qwen-vl-utils pandas pyarrow pillow numpy modelscope
+```
+
+对齐 FlashInfer JIT 用的 CUDA 工具链 (pip 会混装 13.0/13.2，需手动对齐到 13.0.88)：
+
+```bash
+pip install "nvidia-cuda-nvcc==13.0.88" "nvidia-nvvm==13.0.*" "nvidia-cuda-crt==13.0.*"
+CU=~/miniforge3/envs/qwenvl/lib/python3.11/site-packages/nvidia/cu13
+ln -sf libcudart.so.13 $CU/lib/libcudart.so
+ln -sfn lib $CU/lib64
+```
+
+## 4. 模型与数据
+
+```bash
 modelscope download --model Qwen/Qwen2.5-VL-7B-Instruct-AWQ \
   --local_dir ~/models/Qwen2.5-VL-7B-Instruct-AWQ
+# 数据放 ~/black_smash_07/data/chunk-000/episode_*.parquet
 ```
-或 hf 镜像:`HF_ENDPOINT=https://hf-mirror.com hf download Qwen/Qwen2.5-VL-7B-Instruct-AWQ --local-dir ~/models/Qwen2.5-VL-7B-Instruct-AWQ`
 
 ---
 
-## 路线 A:vLLM 服务 + openai 后端(推荐)
+## 路线 A：vLLM 服务 (推荐)
 
-### A1. 装 vLLM
-```bash
-pip install vllm openai
-# 数据预处理依赖
-pip install qwen-vl-utils pillow pandas pyarrow numpy
-```
+**终端 1 — 起服务：**
 
-### A2. 起服务(开一个终端常驻)
-```bash
-vllm serve ~/models/Qwen2.5-VL-7B-Instruct-AWQ \
-  --served-model-name qwen \
-  --quantization awq_marlin \
-  --max-model-len 32768 \
-  --limit-mm-per-prompt image=40 \
-  --gpu-memory-utilization 0.92
-```
-> `--limit-mm-per-prompt image=40` 很重要:我们一次最多发 ~32 帧,默认上限太低会报错。
-> 服务起来后监听 `http://localhost:8000/v1`。
-
-### A3. 跑 Stage 1(另一个终端)
 ```bash
 conda activate qwenvl
+./scripts/start_vllm.sh
+# 或手动:
+# export CUDA_HOME=~/miniforge3/envs/qwenvl/lib/python3.11/site-packages/nvidia/cu13
+# export PATH=~/miniforge3/envs/qwenvl/bin:$CUDA_HOME/bin:$PATH
+# vllm serve ~/models/Qwen2.5-VL-7B-Instruct-AWQ \
+#   --served-model-name qwen --quantization awq_marlin \
+#   --max-model-len 32768 --limit-mm-per-prompt '{"image":40}' \
+#   --gpu-memory-utilization 0.92
+```
+
+> vLLM 0.23 的 `--limit-mm-per-prompt` 用 JSON：`'{"image":40}'`（旧版 `image=40` 会报错）。
+> 首次启动 FlashInfer 会 JIT 编译，约 1–3 分钟；服务监听 `http://localhost:8000/v1`。
+
+**终端 2 — 跑标注：**
+
+```bash
+conda activate qwenvl
+cd ~/black-smash-subtask-annotation
 python vlm_annotate.py --backend openai --model qwen \
   --base-url http://localhost:8000/v1 \
-  --data black_smash_07/data/chunk-000 \
+  --data ~/black_smash_07/data/chunk-000 \
   --out mvt_annotations_vlm --eps 0,1,2 --n-frames 32
-# 跑通后去掉 --eps 标全部
+# 跑通后去掉 --eps 标全部 100 集
 ```
 
----
-
-## 路线 B:transformers 直跑(简单)
+## 路线 B：transformers 直跑
 
 ```bash
-pip install "transformers>=4.49.0" accelerate qwen-vl-utils autoawq pillow pandas pyarrow numpy
+pip install "transformers>=4.49.0" accelerate autoawq
 python vlm_annotate.py --backend qwen-local \
   --model ~/models/Qwen2.5-VL-7B-Instruct-AWQ \
-  --data black_smash_07/data/chunk-000 \
+  --data ~/black_smash_07/data/chunk-000 \
   --out mvt_annotations_vlm --eps 0,1,2 --n-frames 32
 ```
-> 不装 flash-attn 也行(脚本默认 `sdpa`)。`--dry-run` 可在无 GPU 时只检查抽帧/prompt。
 
 ---
 
-## 5. 接着跑 Stage 2 / 3(任一路线之后)
+## 5. Stage 2 / 3
 
 ```bash
-python batch_annotate.py --data black_smash_07/data/chunk-000 --out mvt_annotations   # state 精标
-python fuse_annotations.py --tol-s 0.5                                                 # 融合 + 标待复查点
-python annotate_gui.py --ep 0                                                          # 人工复查(需图形界面)
+python batch_annotate.py --data ~/black_smash_07/data/chunk-000 --out mvt_annotations
+python fuse_annotations.py --tol-s 0.5
+python annotate_gui.py --ep 0
 ```
 
 ## 6. 常见问题
 
 | 现象 | 解决 |
 |---|---|
-| `no kernel image ... device` | torch 不是 cu128;按第 2 步重装 |
-| vLLM 报图片数超限 | 调大 `--limit-mm-per-prompt image=NN`,或 `vlm_annotate.py` 调小 `--n-frames` |
-| CUDA OOM | 用 AWQ(别用全精度 7B);降 `--gpu-memory-utilization`、`--max-model-len`、`--n-frames` |
-| 模型下载慢/连不上 | 用 ModelScope 或 `HF_ENDPOINT=https://hf-mirror.com` |
-| AWQ 加载报错(transformers 路线) | 确认装了 `autoawq`,且 torch 仍是 cu128(autoawq 有时会降级 torch) |
+| `SM 12.x requires CUDA >= 12.9` | 换 cu130 torch，别用 cu128 |
+| `libcudart.so.13: cannot open` | `export LD_LIBRARY_PATH=.../nvidia/cu13/lib:$LD_LIBRARY_PATH` 或直接用 `start_vllm.sh` |
+| `Could not find nvcc` | 设 `CUDA_HOME=.../nvidia/cu13`，`PATH` 加 `$CUDA_HOME/bin` |
+| `No such file or directory: 'ninja'` | `PATH` 加 `~/miniforge3/envs/qwenvl/bin` |
+| `CUDA compiler and toolkit headers are incompatible` | `pip install nvidia-cuda-nvcc==13.0.88 nvidia-nvvm==13.0.* nvidia-cuda-crt==13.0.*` |
+| `cannot find -lcudart` | 建软链：`ln -sf libcudart.so.13 $CU/lib/libcudart.so` 和 `ln -sfn lib $CU/lib64` |
+| `Unsupported .version 9.2; current version is 9.0` | nvvm/crt 版本太高，降到 13.0.88 |
+| vLLM 图片数超限 | 调大 `--limit-mm-per-prompt '{"image":NN}'` 或减小 `--n-frames` |
+| CUDA OOM | 用 AWQ；降 `--gpu-memory-utilization` / `--max-model-len` |
 
-## 7. 调质量(7B 值得开)
+## 7. 实测 (black_smash_07, ep0–2)
 
-- **粗→细两遍**:`vlm_annotate.py` 默认 `--fine`(每个点 ±1.5s 密集重采样精定),7B 上建议开着。
-- 帧数:`--n-frames 32`(够则别更高,省显存/token)。
-- 临界点归属:p2(开始倒)交给 VLM,其余以 state 为准,融合时 `|VLM−state|>容差` 的点才丢给人工(见 README)。
+- 速度：~6 s/episode (vLLM, coarse+fine, 32 frames)
+- 7B 不再输出等间距瞎编帧号 (3B 会)
+- 与 proprio 标注比仍偏粗：mean |VLM − state| ≈ 3.7 s；融合容差 0.5 s 下多数点需人工复查
+- 样例见 `examples/sample_ep000_vlm_subtasks.json`

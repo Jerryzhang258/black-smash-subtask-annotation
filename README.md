@@ -63,8 +63,15 @@ effort concentrates on the few ambiguous boundaries.
 
 - **Vision is not a shortcut here.** On the same low-light/fisheye footage,
   `Qwen2.5-VL-3B` cannot localize events (≈ **14 s** mean boundary error; outputs
-  near-arithmetic guesses), motivating the proprioception-first design. A larger
-  model (7B) is the intended VLM for the visual point p2.
+  near-arithmetic guesses), motivating the proprioception-first design.
+- **7B VLM (preliminary, Linux + RTX 5080).** `Qwen2.5-VL-7B-Instruct-AWQ` via
+  vLLM 0.23 on `black_smash_07` ep0–2 (~6 s/episode, coarse+fine, 32 frames):
+  outputs are **not** evenly spaced (unlike 3B), but remain **coarse** vs.
+  proprioception — mean |VLM − state| ≈ **3.7 s** across 18 boundaries (max
+  12.4 s on ep2 `lift_pestle`); **17/18** exceed the 0.5 s fusion tolerance,
+  so Stage 3 review is still needed. Sample outputs:
+  [`examples/sample_ep000_vlm_subtasks.json`](examples/sample_ep000_vlm_subtasks.json)
+  (state reference: [`examples/sample_ep000_subtasks.json`](examples/sample_ep000_subtasks.json)).
 
 ## Task and subtask taxonomy
 
@@ -98,6 +105,7 @@ directly as policy supervision).
 | `outlier_report.py`, `compare_timelines.py`, `verify_tail.py` | QA / consistency checks |
 | `analyze_subtasks.py`, `inspect_episode.py` | diagnostics |
 | `docs/INSTALL_QWEN*.md` | Stage-1 setup (Windows / Linux + RTX 5080, vLLM) |
+| `scripts/start_vllm.sh` | one-shot vLLM launcher (CUDA 13 env + FlashInfer symlinks) |
 
 ## Setup and usage
 
@@ -109,7 +117,10 @@ python annotate_gui.py --ep 0                                                   
 python visualize_annotation.py --ann mvt_annotations --data <dataset>/data/chunk-000 --eps 0
 
 # Stage 1 (GPU): see docs/INSTALL_QWEN_LINUX.md
-python vlm_annotate.py --backend openai --model qwen --base-url http://localhost:8000/v1 --eps 0,1,2
+./scripts/start_vllm.sh   # terminal 1 — serves http://localhost:8000/v1
+python vlm_annotate.py --backend openai --model qwen \
+  --base-url http://localhost:8000/v1 \
+  --data ~/black_smash_07/data/chunk-000 --out mvt_annotations_vlm --eps 0,1,2
 ```
 
 Data: LeRobot v2.1 bimanual, ~1049–1290 frames/episode @ 30 fps, 6 image streams

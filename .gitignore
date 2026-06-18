@@ -36,4 +36,5 @@ __pycache__/
 
 # ---- annotation outputs (results, not in repo; keep examples/ instead) ----
 mvt_annotations/
+mvt_annotations_vlm/
 mvt_annotations_human/
