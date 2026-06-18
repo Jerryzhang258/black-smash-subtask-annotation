@@ -3,10 +3,14 @@ Since every episode is the same task, the segmentation 'shape' should be consist
 Features are scale-invariant (boundary positions & subtask durations as fractions of
 episode length). Flags episodes whose shape deviates via a robust modified z-score
 (median + MAD). Prints per-feature spread + a ranked list of the most anomalous episodes."""
-import glob, json, os, numpy as np
+import glob, json, os, argparse, numpy as np
 
-ANN = r"C:\Intern\mvt_annotations"
-THRESH = 3.5   # |modified z| above this = outlier on that feature
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--ann", default=r"C:\Intern\mvt_annotations")
+_ap.add_argument("--thresh", type=float, default=3.5)
+_args, _ = _ap.parse_known_args()
+ANN = _args.ann
+THRESH = _args.thresh   # |modified z| above this = outlier on that feature
 
 docs = []
 for fp in sorted(glob.glob(os.path.join(ANN, "ep*_subtasks.json"))):

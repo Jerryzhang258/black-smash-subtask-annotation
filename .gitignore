@@ -21,6 +21,12 @@ mvt_keyframes/
 mvt_panels/
 mvt_verify/
 mvt_compare/
+mvt_viz/
+mvt_zoom/
+
+# ---- per-dataset annotation outputs (data, not pushed) ----
+mvt_annotations_smash_05/
+mvt_annotations_smash_06/
 
 # ---- local tooling / caches ----
 .claude/
