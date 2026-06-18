@@ -33,3 +33,7 @@ mvt_annotations_smash_06/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+# ---- annotation outputs (results, not in repo; keep examples/ instead) ----
+mvt_annotations/
+mvt_annotations_human/
