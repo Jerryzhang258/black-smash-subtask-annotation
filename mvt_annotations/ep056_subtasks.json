@@ -4,84 +4,104 @@
   "n_frames": 1166,
   "fps": 30,
   "annotator": "auto-signal",
-  "method": "signal-derived (state-dim3 tube-held window + carrier-drift pour/grind)",
+  "method": "signal-derived (tube grip dim3 + pestle grip dim13 + carrier-drift pour/grind)",
   "critical_points": [
-    198,
-    250,
-    360,
+    189,
+    243,
+    370,
+    661,
     692,
-    1030
+    1047
+  ],
+  "critical_names": [
+    "grasp_tube",
+    "start_pour",
+    "release_tube",
+    "grasp_pestle",
+    "start_grind",
+    "lift_pestle"
   ],
   "subtask_starts": [
     0,
-    198,
-    250,
-    360,
+    189,
+    243,
+    370,
+    661,
     692,
-    1030
+    1047
   ],
   "flags": [],
-  "n_subtasks": 6,
+  "n_subtasks": 7,
   "subtasks": [
     {
       "subtask_id": 0,
       "label": "reach for the test tube",
       "start_frame": 0,
-      "end_frame": 197,
+      "end_frame": 188,
       "start_t": 0.0,
-      "end_t": 6.57,
-      "n_frames": 198,
-      "dur_s": 6.6
+      "end_t": 6.27,
+      "n_frames": 189,
+      "dur_s": 6.3
     },
     {
       "subtask_id": 1,
       "label": "lift the test tube and move it over the mortar",
-      "start_frame": 198,
-      "end_frame": 249,
-      "start_t": 6.6,
-      "end_t": 8.3,
-      "n_frames": 52,
-      "dur_s": 1.73
+      "start_frame": 189,
+      "end_frame": 242,
+      "start_t": 6.3,
+      "end_t": 8.07,
+      "n_frames": 54,
+      "dur_s": 1.8
     },
     {
       "subtask_id": 2,
       "label": "pour the black powder into the mortar",
-      "start_frame": 250,
-      "end_frame": 359,
-      "start_t": 8.33,
-      "end_t": 11.97,
-      "n_frames": 110,
-      "dur_s": 3.67
+      "start_frame": 243,
+      "end_frame": 369,
+      "start_t": 8.1,
+      "end_t": 12.3,
+      "n_frames": 127,
+      "dur_s": 4.23
     },
     {
       "subtask_id": 3,
-      "label": "set down the test tube and pick up the pestle",
-      "start_frame": 360,
-      "end_frame": 691,
-      "start_t": 12.0,
-      "end_t": 23.03,
-      "n_frames": 332,
-      "dur_s": 11.07
+      "label": "release the test tube and reach for the pestle",
+      "start_frame": 370,
+      "end_frame": 660,
+      "start_t": 12.33,
+      "end_t": 22.0,
+      "n_frames": 291,
+      "dur_s": 9.7
     },
     {
       "subtask_id": 4,
-      "label": "grind the powder in the mortar",
-      "start_frame": 692,
-      "end_frame": 1029,
-      "start_t": 23.07,
-      "end_t": 34.3,
-      "n_frames": 338,
-      "dur_s": 11.27
+      "label": "bring the pestle over the mortar",
+      "start_frame": 661,
+      "end_frame": 691,
+      "start_t": 22.03,
+      "end_t": 23.03,
+      "n_frames": 31,
+      "dur_s": 1.03
     },
     {
       "subtask_id": 5,
+      "label": "grind the powder in the mortar",
+      "start_frame": 692,
+      "end_frame": 1046,
+      "start_t": 23.07,
+      "end_t": 34.87,
+      "n_frames": 355,
+      "dur_s": 11.83
+    },
+    {
+      "subtask_id": 6,
       "label": "lift the pestle and return to rest",
-      "start_frame": 1030,
+      "start_frame": 1047,
       "end_frame": 1165,
-      "start_t": 34.33,
+      "start_t": 34.9,
       "end_t": 38.83,
-      "n_frames": 136,
-      "dur_s": 4.53
+      "n_frames": 119,
+      "dur_s": 3.97
     }
   ]
 }

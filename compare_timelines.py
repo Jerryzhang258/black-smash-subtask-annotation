@@ -16,9 +16,9 @@ HUMAN = r"C:\Intern\mvt_annotations_human"
 AUTO  = r"C:\Intern\mvt_annotations"
 OUT   = r"C:\Intern\mvt_compare"
 FPS   = 30
-COLORS = [(255, 85, 85), (255, 176, 0), (255, 122, 0), (160, 112, 255), (0, 220, 90), (80, 160, 255)]
-SUB_CN = ["S0 伸手", "S1 端管", "S2 倒", "S3 放管+取杵", "S4 磨", "S5 抬杵"]
-PT_CN  = ["p1 抓管", "p2 开始倒", "p3 放管", "p4 开始磨", "p5 抬杵"]
+COLORS = [(255, 85, 85), (255, 176, 0), (255, 122, 0), (160, 112, 255), (0, 220, 90), (80, 160, 255), (255, 102, 204)]
+SUB_CN = ["S0 伸手", "S1 端管", "S2 倒", "S3 放管+取杵", "S4 移杵", "S5 磨", "S6 抬杵"]
+PT_CN  = ["p1 抓管", "p2 开始倒", "p3 放管", "p4 抓杵", "p5 开始磨", "p6 抬杵"]
 os.makedirs(OUT, exist_ok=True)
 
 
@@ -91,11 +91,12 @@ def render(ep):
 
     # legend
     ly = yA + bh + 36
-    for i in range(6):
-        d.rectangle([L + i * 175, ly, L + i * 175 + 14, ly + 14], fill=COLORS[i])
-        d.text((L + i * 175 + 18, ly), f"{SUB_CN[i]}", fill=(220, 220, 220), font=f11)
+    ns = len(SUB_CN)
+    for i in range(ns):
+        d.rectangle([L + i * 150, ly, L + i * 150 + 14, ly + 14], fill=COLORS[i])
+        d.text((L + i * 150 + 18, ly), f"{SUB_CN[i]}", fill=(220, 220, 220), font=f11)
     # per-subtask IoU
-    d.text((L, ly + 28), "各段时序 IoU:  " + "   ".join(f"S{i}={ious[i]:.2f}" for i in range(6)),
+    d.text((L, ly + 28), "各段时序 IoU:  " + "   ".join(f"S{i}={ious[i]:.2f}" for i in range(len(ious))),
            fill=(200, 220, 200), font=f14)
     # axis
     for fr in [0, N - 1]:
@@ -131,5 +132,5 @@ if results:
         print(f"  {nm:10s}  MAE={np.abs(D[:, i]).mean():5.1f}f / {np.abs(D[:, i]).mean()/FPS:.2f}s   "
               f"bias={D[:, i].mean():+.1f}f")
     I = np.array([r["ious"] for r in results])
-    print("  mean per-subtask IoU:", [f"S{i}={I[:, i].mean():.2f}" for i in range(6)])
+    print("  mean per-subtask IoU:", [f"S{i}={I[:, i].mean():.2f}" for i in range(I.shape[1])])
 print("DONE")

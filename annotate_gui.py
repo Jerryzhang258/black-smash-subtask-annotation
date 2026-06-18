@@ -1,46 +1,45 @@
 """
-Interactive manual subtask annotator (tkinter). Play an episode like a video and
-press number keys to stamp CRITICAL POINTS (subtask transitions) at the current frame.
-The episode start (0) and end (N-1) are implicit, so NB critical points -> NB+1 subtasks.
-Saves human labels to mvt_annotations_human/ (QA method 4). Auto boundaries NOT shown
--> labeling stays blind.
+Stage 3 manual review annotator (tkinter). Play an episode like a video and press
+number keys to stamp / adjust the 6 CRITICAL POINTS (subtask transitions).
 
-Critical points (keys 1..5):
-  1 抓到试管 (grasp tube)   2 开始倒 (start pour)   3 放试管 (set down tube)
-  4 开始磨 (start grind)    5 抬杵 (lift pestle)
-=> 6 subtasks: reach / move-tube / pour / setdown+pestle / grind / lift+rest
+This is the REVIEW stage of the 3-stage pipeline: the timeline shows the VLM
+(Stage 1) and state (Stage 2) proposals plus the fused result, the human marks are
+pre-seeded from the fused annotation, and the points the two machines disagreed on
+(fused review_points) are flagged with red ▲ — so you only adjust those and save.
 
-Layouts (--layout): all (6 streams, default) | both | cam1 | cam0
+Critical points (keys 1..6):
+  1 抓试管 (grasp tube)  2 开始倒 (start pour)  3 放试管 (release tube)
+  4 抓杵 (grasp pestle)  5 开始磨 (start grind) 6 抬杵 (lift pestle)
+=> 7 subtasks. Episode start (0) and end (N-1) are implicit.
+
+Saves human labels to mvt_annotations_human/.
 
 Run:  & "C:\\Users\\jerry\\miniconda3\\envs\\vlm\\python.exe" annotate_gui.py --ep 0
 Keys: Space play/pause  <- -> step  , . jump10  Home/End ends  +/- speed
-      1..5 mark point   Shift+1..5 clear   0 clear all   s save   n/p ep   q quit
+      1..6 mark point   Shift+1..6 clear   0 clear all   f seed-from-fused
+      s save   n/p ep   q quit
 """
 import argparse, io, os, json, glob, sys
 import numpy as np, pandas as pd
 import tkinter as tk
 from PIL import Image, ImageTk, ImageEnhance, ImageDraw
 
-# 6 subtasks (stored English labels)
-LABELS = [
-    "reach for the test tube",
-    "lift the test tube and move it over the mortar",
-    "pour the black powder into the mortar",
-    "set down the test tube and pick up the pestle",
-    "grind the powder in the mortar",
-    "lift the pestle and return to rest",
-]
-# 5 critical points marked by keys 1..5 (= start frame of S1..S5; S0 starts at 0)
-BND = ["B1 抓到试管 S0→S1", "B2 开始倒 S1→S2", "B3 放试管 S2→S3",
-       "B4 开始磨 S3→S4", "B5 抬杵 S4→S5"]
-COLORS = ["#ff5555", "#ffb000", "#ff7a00", "#a070ff", "#00dc5a", "#50a0ff"]
-NB = len(BND)          # number of critical points (5)
-NS = NB + 1            # number of subtasks (6)
+from batch_annotate import LABELS   # 7 subtask labels (single source of truth)
+
+# 6 critical points marked by keys 1..6 (= start frame of S1..S6; S0 starts at 0)
+BND = ["B1 抓试管 S0→S1", "B2 开始倒 S1→S2", "B3 放试管 S2→S3",
+       "B4 抓杵 S3→S4", "B5 开始磨 S4→S5", "B6 抬杵 S5→S6"]
+COLORS = ["#ff5555", "#ffb000", "#ff7a00", "#a070ff", "#00dc5a", "#50a0ff", "#ff66cc"]
+NB = len(BND)          # 6 critical points
+NS = NB + 1            # 7 subtasks
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ep", type=int, default=0)
 ap.add_argument("--data", default=r"C:\Intern\black_smash_07\data\chunk-000")
 ap.add_argument("--out", default=r"C:\Intern\mvt_annotations_human")
+ap.add_argument("--fused", default=r"C:\Intern\mvt_annotations_fused")
+ap.add_argument("--state", default=r"C:\Intern\mvt_annotations")
+ap.add_argument("--vlm", default=r"C:\Intern\mvt_annotations_vlm")
 ap.add_argument("--meta", default=r"C:\Intern\black_smash_07\meta\tasks.jsonl")
 ap.add_argument("--layout", default="all", choices=["all", "both", "cam1", "cam0"])
 ap.add_argument("--check", action="store_true")
@@ -57,6 +56,9 @@ EPS = sorted(int(os.path.basename(f).split("_")[1].split(".")[0])
 C0, C1 = "observation.images.camera0", "observation.images.camera1"
 TL0, TR0 = "observation.images.tactile_left_0", "observation.images.tactile_right_0"
 TL1, TR1 = "observation.images.tactile_left_1", "observation.images.tactile_right_1"
+
+TL_L = 40          # left margin in the timeline canvas (row labels)
+TL_H = 78          # timeline canvas height
 
 
 def get_layout(layout):
@@ -106,6 +108,18 @@ def load_frames(ep):
     return out, n
 
 
+def load_cps(d, ep):
+    fp = os.path.join(d, f"ep{ep:03d}_subtasks.json")
+    if not os.path.exists(fp):
+        return None, None
+    try:
+        j = json.load(open(fp))
+        cps = j.get("critical_points")
+        return (cps if cps and len(cps) == NB else None), j.get("review_points")
+    except Exception:
+        return None, None
+
+
 class Annotator:
     def __init__(self, root):
         self.root = root; self.fps = 30; self.speed = 1.0
@@ -114,21 +128,21 @@ class Annotator:
         self.build(); self.load(EPS[self.ep_pos]); self.tick()
 
     def build(self):
-        self.root.title(f"Subtask Annotator — 全画面 · {NB} 临界点")
+        self.root.title(f"Subtask Review — 全画面 · {NB} 临界点 / {NS} 段")
         self.root.configure(bg="#111")
         self.info = tk.Label(self.root, font=("Consolas", 13), fg="#eee", bg="#111", anchor="w")
         self.info.pack(fill="x", padx=8, pady=(6, 2))
         self.img_lbl = tk.Label(self.root, bg="#000"); self.img_lbl.pack(padx=8)
-        self.tl = tk.Canvas(self.root, width=COMP_W, height=46, bg="#000", highlightthickness=0)
+        self.tl = tk.Canvas(self.root, width=COMP_W, height=TL_H, bg="#000", highlightthickness=0)
         self.tl.pack(padx=8, pady=4)
         self.marks_lbl = tk.Label(self.root, font=("Consolas", 11), fg="#ddd", bg="#111", anchor="w")
         self.marks_lbl.pack(fill="x", padx=8)
-        h = ("空格 播放/暂停   <-/-> 单帧   ,/. 跳10   Home/End 首尾   +/- 速度\n"
-             "1=抓试管 2=开始倒 3=放试管 4=开始磨 5=抬杵   Shift+1~5 清除   0 清空   s 保存   n/p 换集   q 退出")
+        h = ("空格 播放/暂停   <-/-> 单帧   ,/. 跳10   Home/End 首尾   +/- 速度   f 重置为融合值\n"
+             "1=抓试管 2=开始倒 3=放试管 4=抓杵 5=开始磨 6=抬杵   Shift+1~6 清除   0 清空   s 保存   n/p 换集   q 退出")
         tk.Label(self.root, text=h, font=("Consolas", 10), fg="#888", bg="#111", justify="left",
                  anchor="w").pack(fill="x", padx=8, pady=(2, 6))
         for seq in ["<space>", "<Left>", "<Right>", "<comma>", "<period>", "<Home>", "<End>",
-                    "<plus>", "<minus>", "<equal>", "s", "n", "p", "q", "<Escape>", "0"]:
+                    "<plus>", "<minus>", "<equal>", "s", "n", "p", "q", "<Escape>", "0", "f"]:
             self.root.bind(seq, self.on_key)
         for d in range(1, NB + 1):
             self.root.bind(str(d), self.on_key); self.root.bind(f"<Shift-Key-{d}>", self.on_key)
@@ -136,42 +150,63 @@ class Annotator:
     def load(self, ep):
         self.ep = ep
         self.frames, self.N = load_frames(ep)
-        self.marks = {i: None for i in range(1, NB + 1)}      # 1..NB critical points
+        self.marks = {i: None for i in range(1, NB + 1)}
         self.cur = 0; self.playing = False
         self.photo = ImageTk.PhotoImage(self.frames[0]); self.img_lbl.config(image=self.photo)
-        self.load_existing(ep); self.display()
+        # references
+        self.ref_vlm, _ = load_cps(args.vlm, ep)
+        self.ref_state, _ = load_cps(args.state, ep)
+        self.ref_fused, self.review = load_cps(args.fused, ep)
+        self.review = self.review or []
+        self.seed_marks(ep)
+        self.display()
+
+    def seed_marks(self, ep):
+        # priority: existing human file > fused > state
+        for src in (args.out, args.fused, args.state):
+            cps, _ = load_cps(src, ep)
+            if cps:
+                for i in range(1, NB + 1): self.marks[i] = cps[i - 1]
+                print(f"  seeded marks from {src}")
+                return
 
     def starts(self):
-        return [0] + [self.marks[i] for i in range(1, NB + 1)]  # length NS (None where unmarked)
-
-    def load_existing(self, ep):
-        fp = os.path.join(args.out, f"ep{ep:03d}_subtasks.json")
-        if os.path.exists(fp):
-            try:
-                cps = json.load(open(fp)).get("critical_points")
-                if cps and len(cps) == NB:
-                    for i in range(1, NB + 1): self.marks[i] = cps[i - 1]
-                    print(f"  loaded existing marks from {fp}")
-            except Exception: pass
+        return [0] + [self.marks[i] for i in range(1, NB + 1)]
 
     def display(self):
         self.photo.paste(self.frames[self.cur])
         self.info.config(text=f"ep{self.ep:03d} ({self.ep_pos+1}/{len(EPS)})  frame {self.cur:4d}/{self.N-1}"
                               f"  t={self.cur/self.fps:6.2f}s  {'PLAY' if self.playing else 'PAUSE'} x{self.speed:g}")
         self.marks_lbl.config(text="临界点: " + "  ".join(
-            f"{BND[i-1]}={'%d' % self.marks[i] if self.marks[i] is not None else '--'}" for i in range(1, NB + 1)))
+            ("★" if i in self.review else "") +
+            f"{BND[i-1]}={'%d' % self.marks[i] if self.marks[i] is not None else '--'}"
+            for i in range(1, NB + 1)) + ("   (★=两法不一致,重点看)" if self.review else ""))
         self.draw_timeline()
 
-    def draw_timeline(self):
-        self.tl.delete("all"); W = COMP_W
-        self.tl.create_rectangle(0, 18, W, 30, fill="#333", outline="")
-        st = self.starts()
+    def _bar(self, y, h, starts, label):
+        W = COMP_W; N = self.N
+        self.tl.create_text(2, y, text=label, fill="#aaa", anchor="nw", font=("Consolas", 8))
+        def X(fr): return int(TL_L + fr / N * (W - TL_L))
         for i in range(NS):
-            if st[i] is None: continue
-            e = next((st[j] for j in range(i + 1, NS) if st[j] is not None), self.N)
-            self.tl.create_rectangle(int(st[i] / self.N * W), 18, int(e / self.N * W), 30, fill=COLORS[i], outline="")
-            self.tl.create_text(int(st[i] / self.N * W) + 2, 8, text=f"S{i}", fill=COLORS[i], anchor="w", font=("Consolas", 9))
-        x = int(self.cur / self.N * W); self.tl.create_line(x, 0, x, 46, fill="#fff", width=2)
+            s = starts[i] if i < len(starts) else None
+            if s is None: continue
+            e = next((starts[j] for j in range(i + 1, NS) if j < len(starts) and starts[j] is not None), N)
+            self.tl.create_rectangle(X(s), y, X(e), y + h, fill=COLORS[i], outline="#111")
+            if X(e) - X(s) > 13:
+                self.tl.create_text(X(s) + 2, y + 1, text=f"S{i}", fill="#000", anchor="nw", font=("Consolas", 7))
+
+    def draw_timeline(self):
+        self.tl.delete("all"); W = COMP_W; N = self.N
+        def X(fr): return int(TL_L + fr / N * (W - TL_L))
+        if self.ref_vlm:   self._bar(14, 8, [0] + self.ref_vlm, "VLM")
+        if self.ref_state: self._bar(26, 8, [0] + self.ref_state, "state")
+        self._bar(42, 18, self.starts(), "人工")
+        # review markers (red triangles) at fused positions of disagreed points
+        for p in self.review:
+            cp = self.ref_fused[p - 1] if self.ref_fused else None
+            if cp is not None:
+                x = X(cp); self.tl.create_polygon(x - 4, 62, x + 4, 62, x, 70, fill="#ff3030")
+        x = X(self.cur); self.tl.create_line(x, 0, x, TL_H, fill="#fff", width=2)
 
     def clamp(self, i): return max(0, min(self.N - 1, i))
 
@@ -190,6 +225,10 @@ class Annotator:
         elif k == "s": self.save()
         elif k == "n": self.switch(+1)
         elif k == "p": self.switch(-1)
+        elif k == "f":
+            cps = self.ref_fused
+            if cps:
+                for i in range(1, NB + 1): self.marks[i] = cps[i - 1]
         elif k == "0": self.marks = {i: None for i in range(1, NB + 1)}
         elif k.isdigit() and 1 <= int(k) <= NB:
             self.marks[int(k)] = None if shift else self.cur
@@ -205,7 +244,7 @@ class Annotator:
             self.info.config(text=f"!! {NB} 个临界点未标全,先标完再保存"); return
         if cps != sorted(cps):
             self.info.config(text="!! 临界点不是递增顺序,先修正"); return
-        st = [0] + cps                                    # NS starts
+        st = [0] + cps
         subs = []
         for i in range(NS):
             a = st[i]; b = (st[i + 1] - 1) if i < NS - 1 else self.N - 1
@@ -235,6 +274,7 @@ if args.check:
     r = tk.Tk(); a = Annotator.__new__(Annotator)
     a.root = r; a.fps = 30; a.speed = 1.0; a.ep_pos = 0; a.playing = False; a.cur = 0
     a.build(); a.frames = fr; a.N = 5; a.ep = args.ep; a.marks = {i: None for i in range(1, NB + 1)}
+    a.ref_vlm = a.ref_state = a.ref_fused = None; a.review = []
     a.photo = ImageTk.PhotoImage(a.frames[0]); a.img_lbl.config(image=a.photo); a.display()
     r.update(); r.destroy(); print("CHECK OK"); sys.exit(0)
 
