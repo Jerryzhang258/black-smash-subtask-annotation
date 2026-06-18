@@ -1,6 +1,13 @@
-# ---- raw dataset (huge, never commit) ----
-black_smash_07/
+# ---- raw datasets (huge, never commit) ----
+black_smash_*/
+white_smash_*/
+yellow_smash_*/
+green_clean_*/
+blue_clean_*/
+red_clean_*/
+so100_*/
 *.parquet
+download_smash.log
 
 # ---- regenerable intermediate visualizations ----
 mvt_frames/
