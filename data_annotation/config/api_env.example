@@ -1,0 +1,11 @@
+# Copy this file to config/api_env.local.sh or export these variables manually.
+# Do NOT write real API keys into files that will be committed or shared.
+
+# Gemini/TTK OpenAI-compatible endpoint
+export TTK_API_KEY="REPLACE_WITH_YOUR_TTK_OR_GEMINI_PROXY_KEY"
+export TTK_BASE_URL="https://api.ttk.homes/v1"
+export TTK_MODEL="gemini-3.5-flash"
+
+# Optional: Qwen/DashScope endpoint
+export DASHSCOPE_API_KEY="REPLACE_WITH_YOUR_DASHSCOPE_KEY"
+
