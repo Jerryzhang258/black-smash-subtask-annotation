@@ -1,8 +1,8 @@
-# 在 Linux + RTX 5080 上跑 Qwen2.5-VL-7B (Stage 1 视觉标注)
+# 在 Linux + RTX 5080 上跑 Qwen2.5-VL-7B-AWQ
 
 面向 **Linux (Ubuntu 22.04/24.04) + NVIDIA RTX 5080 (16 GB)** 跑 **Qwen2.5-VL-7B-AWQ**，作为标注流水线第 1 步 (VLM 粗标)。
 
-> 三阶段总览见 [README](../README.md)；Windows 版见 [`INSTALL_QWEN.md`](INSTALL_QWEN.md)。
+> 当前完整流水线见 [README](../README.md)；Windows 版见 [`INSTALL_QWEN.md`](INSTALL_QWEN.md)。
 
 RTX 5080 是 **Blackwell (`sm_120`)**。实测 **vLLM 0.23 + FlashInfer 需要 CUDA ≥ 12.9**，请用 **PyTorch CUDA 13.0 (`cu130`)** 全栈，不要用文档旧版的 cu128。16 GB 显存放不下 7B 全精度，用 **AWQ 4-bit (~7 GB)**。
 
@@ -104,13 +104,16 @@ python vlm_annotate.py --backend qwen-local \
 
 ---
 
-## 5. Stage 2 / 3
+## 5. 完整流水线
 
 ```bash
-python batch_annotate.py --data ~/black_smash_07/data/chunk-000 --out mvt_annotations
-python fuse_annotations.py --tol-s 0.5
-python annotate_gui.py --ep 0
+PYTHON_BIN=~/miniforge3/envs/qwenvl/bin/python \
+DATASET_ROOT=~/black_smash_07 DATASET_ID=07 \
+bash scripts/run_annotation_pipeline.sh
 ```
+
+这会生成 state、qwen、fused、qwen-stage 四类标注，以及
+`compare_tracks_07/index.html` 同图对比可视化。
 
 ## 6. 常见问题
 
