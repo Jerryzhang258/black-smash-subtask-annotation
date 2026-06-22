@@ -1,0 +1,27 @@
+{
+  "task": "black_smash",
+  "task_description": "Pour the black powder into the mortar and grind.",
+  "fps": 30,
+  "state_layout": {
+    "tube_gripper": 3,
+    "pestle_gripper": 13,
+    "grip_dims": [3, 4, 13, 14]
+  },
+  "subtasks": [
+    "reach for the test tube",
+    "lift the test tube and move it over the mortar",
+    "pour the black powder into the mortar",
+    "release the test tube and reach for the pestle",
+    "bring the pestle over the mortar",
+    "grind the powder in the mortar",
+    "lift the pestle and return to rest"
+  ],
+  "events": [
+    {"id": "p1", "type": "gripper_close",      "name": "grasp_tube",    "params": {"arm": "tube"}},
+    {"id": "p2", "type": "orientation_change", "name": "start_pour",    "params": {"arm": "tube"}},
+    {"id": "p3", "type": "gripper_open",       "name": "release_tube",  "params": {"arm": "tube"}},
+    {"id": "p4", "type": "gripper_close",      "name": "grasp_pestle",  "params": {"arm": "pestle"}},
+    {"id": "p5", "type": "motion_regime",      "name": "start_grind",   "params": {"regime": "in_place_start"}},
+    {"id": "p6", "type": "motion_regime",      "name": "lift_pestle",   "params": {"regime": "end"}}
+  ]
+}
