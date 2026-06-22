@@ -21,7 +21,7 @@ from PIL import Image
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("run_dir", type=Path)
-    parser.add_argument("--model", default=os.environ.get("TTK_MODEL", "gemini-3.5-flash-low-反重力"))
+    parser.add_argument("--model", default=os.environ.get("TTK_MODEL", "gemini-2.5-flash"))
     parser.add_argument(
         "--provider",
         choices=["openai", "google"],

@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
     parser.add_argument("--meta-root", type=Path, default=DEFAULT_META_ROOT)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
-    parser.add_argument("--model", default="qwen3-vl-flash")
+    parser.add_argument("--model", default="qwen")
     parser.add_argument(
         "--provider",
         choices=["openai", "google"],
@@ -53,6 +53,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--left-gripper-dim", type=int, default=6)
     parser.add_argument("--right-gripper-dim", type=int, default=13)
     parser.add_argument("--signal-detail", choices=["full", "compact"], default="full")
+    parser.add_argument(
+        "--critical-ref-dir",
+        type=Path,
+        default=None,
+        help="Optional directory with epNNN_subtasks.json. When set, use those six critical points as fixed stage boundaries.",
+    )
     parser.add_argument(
         "--task-description",
         default="",
@@ -156,6 +162,99 @@ def build_summary(df: pd.DataFrame, left_gripper_dim: int, right_gripper_dim: in
     }
 
 
+def load_reference_critical_points(ref_dir: Path | None, episode_id: int) -> dict[str, int] | None:
+    if ref_dir is None:
+        return None
+    path = ref_dir / f"ep{episode_id:03d}_subtasks.json"
+    if not path.exists():
+        return None
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    target_names = [
+        "p1_grasp_tube",
+        "p2_start_pour",
+        "p3_release_tube",
+        "p4_grasp_pestle",
+        "p5_start_grind",
+        "p6_lift_pestle",
+    ]
+    name_map = {
+        "grasp_tube": "p1_grasp_tube",
+        "start_pour": "p2_start_pour",
+        "release_tube": "p3_release_tube",
+        "grasp_pestle": "p4_grasp_pestle",
+        "start_grind": "p5_start_grind",
+        "lift_pestle": "p6_lift_pestle",
+    }
+    names = doc.get("critical_names") or target_names
+    cps = doc.get("critical_points") or []
+    if len(cps) != 6:
+        return None
+    ref = {name_map.get(name, name): int(value) for name, value in zip(names, cps)}
+    if not all(name in ref for name in target_names):
+        ref = {name: int(value) for name, value in zip(target_names, cps)}
+    return ref
+
+
+def enforce_reference_boundaries(parsed: dict[str, Any] | None, ref_cps: dict[str, int] | None, episode_length: int) -> dict[str, Any] | None:
+    if not parsed or not ref_cps:
+        return parsed
+    ordered_names = [
+        "p1_grasp_tube",
+        "p2_start_pour",
+        "p3_release_tube",
+        "p4_grasp_pestle",
+        "p5_start_grind",
+        "p6_lift_pestle",
+    ]
+    cps = [int(ref_cps[name]) for name in ordered_names]
+    stage_names = ["reach", "transport", "place", "release", "grasp", "adjust", "done"]
+    starts = [0] + [x + 1 for x in cps]
+    ends = cps + [episode_length - 1]
+    old_stages = parsed.get("stages") if isinstance(parsed.get("stages"), list) else []
+    stages = []
+    for i, (name, start, end) in enumerate(zip(stage_names, starts, ends)):
+        old = old_stages[i] if i < len(old_stages) and isinstance(old_stages[i], dict) else {}
+        stages.append(
+            {
+                "name": name,
+                "start_t": int(start),
+                "end_t": int(max(start, end)),
+                "prediction_prompt": old.get("prediction_prompt") or default_prediction_prompt(name),
+                "expected_future_observation": old.get("expected_future_observation") or default_expected_observation(name),
+                "reason": old.get("reason") or "fixed reference boundary",
+            }
+        )
+    parsed = dict(parsed)
+    parsed["critical_points"] = ref_cps
+    parsed["stages"] = stages
+    parsed["boundary_source"] = "critical_ref_dir"
+    return parsed
+
+
+def default_prediction_prompt(name: str) -> str:
+    return {
+        "reach": "Move the gripper toward the test tube.",
+        "transport": "Move the grasped tube toward the mortar.",
+        "place": "Pour the black powder into the mortar.",
+        "release": "Release the tube and move toward the pestle.",
+        "grasp": "Grasp and position the pestle.",
+        "adjust": "Grind the powder with the pestle.",
+        "done": "Finish the motion.",
+    }.get(name, "Continue the task.")
+
+
+def default_expected_observation(name: str) -> str:
+    return {
+        "reach": "The gripper should approach the test tube.",
+        "transport": "The tube should move toward the mortar.",
+        "place": "Powder should appear in the mortar.",
+        "release": "The tube should be released.",
+        "grasp": "The pestle should be grasped or positioned.",
+        "adjust": "The pestle should move in the mortar.",
+        "done": "The robot should hold the final pose.",
+    }.get(name, "The next task state should be visible.")
+
+
 def image_bytes_from_cell(cell: Any) -> bytes:
     if isinstance(cell, dict):
         if cell.get("bytes") is not None:
@@ -246,31 +345,64 @@ def build_prompt(summary: dict[str, Any], task_description: str, signal_detail: 
     )
     return (
         "You are a robotics dataset annotation assistant. "
-        "Given a task description, full gripper width/velocity sequences, and camera frames, split this episode into semantic stages.\n\n"
+        "Given a task description, gripper width/velocity sequences, and chronological camera frames, split this episode into exactly 7 fixed policy stages and identify the task-specific critical points.\n\n"
         f"Important task context: {task_description}. "
-        "When the visual evidence is consistent with this task, produce predictive stage prompts that tell the robot what should happen next.\n\n"
+        "This black-smash task has 7 policy subtasks separated by 6 critical points: "
+        "p1_grasp_tube, p2_start_pour, p3_release_tube, p4_grasp_pestle, p5_start_grind, p6_lift_pestle.\n\n"
+        "Most critical points can be cross-checked by gripper/motion signals, but p2_start_pour is a visual boundary. "
+        "For p2, use before/after temporal evidence, not a single-frame guess.\n\n"
         "Requirements:\n"
         "1. Output strict JSON only, no markdown.\n"
         "2. Use stage names only from this exact set: reach, grasp, transport, place, release, adjust, done. Do not invent labels such as lift, open, move, or carry.\n"
-        "3. Stages should cover the whole episode without overlap.\n"
-        "4. prediction_prompt must be a predictive command for the next few frames, not a description of the current frame. Use future-oriented language such as 'move', 'grasp', 'lift', 'place', or 'release'.\n"
-        "5. expected_future_observation should state what should become visible several frames after the start of this stage if the prediction is correct. This will be checked later in a separate batch self-test after all episodes are labeled.\n\n"
+        "3. Output exactly 7 stages. Do not create extra micro-stages, repeated short fragments, or a free-form variable number of stages.\n"
+        "4. The 7 stages must cover the whole episode without overlap and must correspond to the six critical points: "
+        "stage0=[0,p1], stage1=[p1+1,p2], stage2=[p2+1,p3], stage3=[p3+1,p4], "
+        "stage4=[p4+1,p5], stage5=[p5+1,p6], stage6=[p6+1,episode_length-1].\n"
+        "5. Use this fixed semantic meaning for the 7 stages: "
+        "S0 reach/approach tube before grasp, S1 tube grasped or moving toward mortar before pour starts, "
+        "S2 pouring from tube into mortar, S3 after tube release / transition toward pestle, "
+        "S4 pestle grasped or positioned before grinding starts, S5 grinding with pestle, S6 lift/finish/done.\n"
+        "6. Stage names should usually be: reach, transport, place, release, grasp, adjust, done. "
+        "If visual evidence strongly suggests a nearby allowed name, choose the closest allowed name, but keep exactly 7 stages.\n"
+        "7. prediction_prompt must be a predictive command for the next few frames, not a description of the current frame. Use future-oriented language such as 'move', 'grasp', 'lift', 'place', or 'release'.\n"
+        "8. expected_future_observation should state what should become visible several frames after the start of this stage if the prediction is correct. This will be checked later in a separate batch self-test after all episodes are labeled.\n"
+        "9. Critical-point frames and every stage start_t/end_t must be numeric integers only. Do not output formulas, strings, symbolic names, or expressions such as p1+1. "
+        "They must be integers in [0, episode_length - 1], strictly increasing, and must define the 7 stage boundaries exactly as described above. "
+        "p6_lift_pestle is NOT the final frame; leave a final done interval after p6, preferably at least 5 frames when the episode is long enough.\n"
+        "10. p2_start_pour is the first frame where black powder visibly starts leaving the test tube or newly appears in the mortar.\n"
+        "11. Do not choose p2 as the first reach-over-mortar frame, a pre-pour tilt with no visible powder, the middle of the pour, a frame where powder is already accumulated, or tube release.\n"
+        "12. Use before/after evidence: just before p2 there should be no visible powder flow; just after p2 there should be visible flow or more powder in the mortar. If powder is too hard to see, choose the earliest sustained pouring tilt over the mortar and set p2_confidence='low'.\n\n"
         "Episode summary:\n"
         f"{json.dumps(compact, ensure_ascii=False, indent=2)}\n\n"
         "Return exactly one JSON object matching this schema. Do not return a JSON array.\n"
+        "Use concrete integer frame numbers in the actual answer; the schema below shows types only.\n"
         "{\n"
         '  "episode_index": int,\n'
+        '  "critical_points": {\n'
+        '    "p1_grasp_tube": int,\n'
+        '    "p2_start_pour": int,\n'
+        '    "p3_release_tube": int,\n'
+        '    "p4_grasp_pestle": int,\n'
+        '    "p5_start_grind": int,\n'
+        '    "p6_lift_pestle": int\n'
+        "  },\n"
+        '  "p2_frame_judgments": [\n'
+        '    {"frame": int, "evidence": "very short before/after evidence"}\n'
+        "  ],\n"
+        '  "p2_confidence": "high|medium|low",\n'
+        '  "p2_reason": "short before/after evidence",\n'
         '  "stages": [\n'
         "    {\n"
         '      "name": "reach",\n'
-        '      "start_t": 0,\n'
-        '      "end_t": 10,\n'
-        '      "prediction_prompt": "Move the left gripper toward the orange lid.",\n'
-        '      "expected_future_observation": "Within the next few frames, the left gripper should be closer to the orange lid.",\n'
+        '      "start_t": int,\n'
+        '      "end_t": int,\n'
+        '      "prediction_prompt": "Move the tube gripper toward the test tube.",\n'
+        '      "expected_future_observation": "The gripper should approach the test tube.",\n'
         '      "reason": "very short evidence, <= 8 words"\n'
         "    }\n"
         "  ]\n"
-        "}"
+        "}\n"
+        "The stages array above is abbreviated for schema only; your answer must contain exactly 7 stage objects."
     )
 
 
@@ -450,6 +582,13 @@ def main() -> None:
             task_description = resolve_task_description(df, task_map, args.task_description)
             camera_keys = parse_camera_keys(args.camera_keys)
             summary = build_summary(df, args.left_gripper_dim, args.right_gripper_dim)
+            ref_cps = load_reference_critical_points(args.critical_ref_dir, summary["episode_index"])
+            if ref_cps:
+                summary["reference_critical_points"] = ref_cps
+                summary["reference_boundary_instruction"] = (
+                    "Use these exact six critical-point frames as fixed boundaries. "
+                    "Do not move them; only describe the visual semantics and future predictions for each interval."
+                )
             frame_indices = select_frame_indices(summary["episode_length"], args.frame_sampling)
             keyframes = save_keyframes(df, summary, camera_keys, keyframe_dir, frame_indices)
             plot_path = save_gripper_plot(summary, df, plot_dir)
@@ -477,6 +616,7 @@ def main() -> None:
                     elif usage_obj is not None:
                         usage = str(usage_obj)
                     parsed = extract_json(raw_text)
+                    parsed = enforce_reference_boundaries(parsed, ref_cps, summary["episode_length"])
                 except Exception as exc:
                     parsed = None
                     error = repr(exc)

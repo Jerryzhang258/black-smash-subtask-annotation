@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end annotation pipeline for one black_smash dataset:
-# state-only -> Qwen-only -> fused -> multi-track visualization.
+# state-only -> Qwen critical points -> fused boundaries -> qwen-stage semantics
+# -> multi-track visualization.
 #
 # Example:
 #   DATASET_ROOT=/home/hillbot/black_smash_07 DATASET_ID=07 \
@@ -21,15 +22,19 @@ EPS="${EPS:-}"
 RUN_STATE="${RUN_STATE:-1}"
 RUN_QWEN="${RUN_QWEN:-1}"
 RUN_FUSED="${RUN_FUSED:-1}"
+RUN_QWEN_STAGE="${RUN_QWEN_STAGE:-1}"
 RUN_VIZ="${RUN_VIZ:-1}"
 RUN_GEMINI="${RUN_GEMINI:-0}"
 
 STATE_OUT="${STATE_OUT:-${OUT_ROOT}/annotations_state_${DATASET_ID}}"
 QWEN_OUT="${QWEN_OUT:-${OUT_ROOT}/annotations_qwen_${DATASET_ID}}"
 FUSED_OUT="${FUSED_OUT:-${OUT_ROOT}/annotations_fused_${DATASET_ID}}"
+QWEN_STAGE_OUT_ROOT="${QWEN_STAGE_OUT_ROOT:-${OUT_ROOT}/annotations_qwen_stage_${DATASET_ID}}"
 VIZ_OUT="${VIZ_OUT:-${OUT_ROOT}/compare_tracks_${DATASET_ID}}"
 GEMINI_OUT_ROOT="${GEMINI_OUT_ROOT:-${OUT_ROOT}/annotations_gemini_stage_${DATASET_ID}}"
 GEMINI_JSONL="${GEMINI_JSONL:-}"
+STAGE_JSONL="${STAGE_JSONL:-}"
+STAGE_LABEL="${STAGE_LABEL:-qwen-stage}"
 
 QWEN_BACKEND="${QWEN_BACKEND:-openai}"
 QWEN_MODEL="${QWEN_MODEL:-qwen}"
@@ -43,12 +48,22 @@ QWEN_FINE="${QWEN_FINE:-1}"
 QWEN_P2_HISTORY="${QWEN_P2_HISTORY:-1}"
 QWEN_P2_HISTORY_WINDOW_S="${QWEN_P2_HISTORY_WINDOW_S:-3.0}"
 QWEN_P2_HISTORY_FRAMES="${QWEN_P2_HISTORY_FRAMES:-15}"
+QWEN_MAX_NEW_TOKENS="${QWEN_MAX_NEW_TOKENS:-384}"
+QWEN_STAGE_MODEL="${QWEN_STAGE_MODEL:-${QWEN_MODEL}}"
+QWEN_STAGE_FRAME_SAMPLING="${QWEN_STAGE_FRAME_SAMPLING:-uniform7}"
+QWEN_STAGE_SIGNAL_DETAIL="${QWEN_STAGE_SIGNAL_DETAIL:-compact}"
+QWEN_STAGE_MAX_TOKENS="${QWEN_STAGE_MAX_TOKENS:-1600}"
+QWEN_STAGE_CAMERA_KEYS="${QWEN_STAGE_CAMERA_KEYS:-observation.images.camera0,observation.images.camera1}"
+QWEN_STAGE_LEFT_GRIPPER_DIM="${QWEN_STAGE_LEFT_GRIPPER_DIM:-3}"
+QWEN_STAGE_RIGHT_GRIPPER_DIM="${QWEN_STAGE_RIGHT_GRIPPER_DIM:-13}"
+TASK_DESCRIPTION="${TASK_DESCRIPTION:-The robot should pour black powder from a test tube into a mortar, then grasp the pestle and grind the powder in the mortar.}"
 
 echo "dataset_id=${DATASET_ID}"
 echo "data_chunk=${DATA_CHUNK}"
 echo "state_out=${STATE_OUT}"
 echo "qwen_out=${QWEN_OUT}"
 echo "fused_out=${FUSED_OUT}"
+echo "qwen_stage_out=${QWEN_STAGE_OUT_ROOT}"
 echo "viz_out=${VIZ_OUT}"
 
 eps_args=()
@@ -92,6 +107,7 @@ if [ "${RUN_QWEN}" = "1" ]; then
     --n-frames "${QWEN_N_FRAMES}" \
     --size "${QWEN_SIZE}" \
     --crop "${QWEN_CROP}" \
+    --max-new-tokens "${QWEN_MAX_NEW_TOKENS}" \
     "${qwen_fine_args[@]}" \
     "${qwen_p2_args[@]}" \
     "${eps_args[@]}"
@@ -118,10 +134,43 @@ if [ "${RUN_FUSED}" = "1" ]; then
     --tol-s "${FUSE_TOL_S:-0.5}"
 fi
 
+if [ "${RUN_QWEN_STAGE}" = "1" ]; then
+  stage_episodes_args=()
+  if [ -n "${EPS}" ]; then
+    stage_episodes_args=(--episodes "${EPS}")
+  fi
+  LOCAL_QWEN_KEY="${LOCAL_QWEN_KEY:-EMPTY}" \
+  "${PYTHON_BIN}" data_annotation/tools/qwen_stage_annotation_demo.py \
+    --dataset-root "${DATASET_ROOT}" \
+    --meta-root "${META_ROOT}" \
+    --output-root "${QWEN_STAGE_OUT_ROOT}" \
+    --provider openai \
+    --model "${QWEN_STAGE_MODEL}" \
+    --api-key-env LOCAL_QWEN_KEY \
+    --base-url "${QWEN_BASE_URL}" \
+    --num-episodes 9999 \
+    "${stage_episodes_args[@]}" \
+    --camera-keys "${QWEN_STAGE_CAMERA_KEYS}" \
+    --frame-sampling "${QWEN_STAGE_FRAME_SAMPLING}" \
+    --left-gripper-dim "${QWEN_STAGE_LEFT_GRIPPER_DIM}" \
+    --right-gripper-dim "${QWEN_STAGE_RIGHT_GRIPPER_DIM}" \
+    --signal-detail "${QWEN_STAGE_SIGNAL_DETAIL}" \
+    --max-tokens "${QWEN_STAGE_MAX_TOKENS}" \
+    --critical-ref-dir "${FUSED_OUT}" \
+    --task-description "${TASK_DESCRIPTION}"
+  latest_stage_run="$(ls -td "${QWEN_STAGE_OUT_ROOT}"/run_* | head -1)"
+  "${PYTHON_BIN}" data_annotation/tools/postprocess_qwen_stage_results.py "${latest_stage_run}"
+  STAGE_JSONL="${latest_stage_run}/stage_annotations_normalized.jsonl"
+  STAGE_LABEL="qwen-stage"
+fi
+
 if [ "${RUN_VIZ}" = "1" ]; then
-  gemini_args=()
+  stage_args=()
+  if [ -n "${STAGE_JSONL}" ] && [ -f "${STAGE_JSONL}" ]; then
+    stage_args=(--stage-jsonl "${STAGE_JSONL}" --stage-label "${STAGE_LABEL}")
+  fi
   if [ -n "${GEMINI_JSONL}" ] && [ -f "${GEMINI_JSONL}" ]; then
-    gemini_args=(--gemini-jsonl "${GEMINI_JSONL}")
+    stage_args=(--stage-jsonl "${GEMINI_JSONL}" --stage-label "${GEMINI_STAGE_LABEL:-gemini-stage}")
   fi
   "${PYTHON_BIN}" visualize_annotation_tracks.py \
     --data "${DATA_CHUNK}" \
@@ -131,7 +180,7 @@ if [ "${RUN_VIZ}" = "1" ]; then
     --out "${VIZ_OUT}" \
     --fps "${FPS}" \
     "${eps_args[@]}" \
-    "${gemini_args[@]}"
+    "${stage_args[@]}"
 fi
 
 echo "pipeline complete for ${DATASET_ID}"

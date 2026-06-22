@@ -120,16 +120,20 @@ FINE_HEAD = (
 
 P2_HISTORY_HEAD = (
     "Same bimanual robot episode, task: \"{task}\".\n"
-    "We are refining ONLY p2_start_pour: the first frame where black powder visibly "
-    "starts leaving the test tube or first appears in the mortar.\n\n"
+    "We are refining ONLY p2_start_pour.\n\n"
     "The proprioceptive state signal already narrowed the search to frames {lo}-{hi}. "
     "Below are chronological frames from that local window, each captioned with its "
-    "frame index (#idx) and time. Use before/after evidence: frames before p2 should "
-    "show no visible powder flow; frames after p2 should show pouring or powder in "
-    "the mortar. If powder is hard to see, choose the earliest frame where the tube "
-    "begins a sustained pouring tilt over the mortar and mark confidence low.\n\n"
+    "frame index (#idx) and time. Use before/after evidence to pick the first frame "
+    "where black powder visibly starts leaving the test tube or newly appears in the "
+    "mortar.\n\n"
+    "Do not choose the first frame where the tube is merely above the mortar, a "
+    "pre-pour tilt with no visible powder, the middle of the pour, or the tube "
+    "release. Frames just before p2 should still show no visible powder flow; frames "
+    "just after p2 should show visible flow or more powder in the mortar. If powder "
+    "is too hard to see, choose the earliest sustained pouring tilt over the mortar "
+    "and mark confidence low.\n\n"
     "Return ONLY JSON:\n"
-    '{{"frame": int, "confidence": "high|medium|low", "reason": "short evidence"}}'
+    '{{"frame": int, "confidence": "high|medium|low", "reason": "short before/after evidence"}}'
 )
 
 

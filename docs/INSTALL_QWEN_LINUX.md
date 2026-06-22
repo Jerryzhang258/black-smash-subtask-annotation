@@ -129,6 +129,6 @@ python annotate_gui.py --ep 0
 ## 7. 实测 (black_smash_07, ep0–2)
 
 - 速度：~6 s/episode (vLLM, coarse+fine, 32 frames)
-- 7B 不再输出等间距瞎编帧号 (3B 会)
+- 7B-AWQ 通过 vLLM 可以稳定服务本地 `qwen` 模型名
 - 与 proprio 标注比仍偏粗：mean |VLM − state| ≈ 3.7 s；融合容差 0.5 s 下多数点需人工复查
 - 样例见 `examples/sample_ep000_vlm_subtasks.json`

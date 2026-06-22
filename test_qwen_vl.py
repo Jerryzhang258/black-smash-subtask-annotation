@@ -7,7 +7,6 @@ docs/INSTALL_QWEN.md) works before running the real Stage-1 annotator.
 
 Run:
   python test_qwen_vl.py --model D:\models\Qwen2.5-VL-7B-Instruct-AWQ
-  python test_qwen_vl.py --model Qwen/Qwen2.5-VL-3B-Instruct
 """
 import argparse, time, tempfile, os, sys
 

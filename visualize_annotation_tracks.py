@@ -6,7 +6,7 @@ Rows:
   - state timeline
   - qwen timeline
   - fused timeline
-  - optional Gemini stage timeline (reach/grasp/transport/place/release/adjust/done)
+  - optional stage timeline (reach/grasp/transport/place/release/adjust/done)
 
 Examples:
   python visualize_annotation_tracks.py \
@@ -17,7 +17,8 @@ Examples:
     --out compare_tracks_07
 
   python visualize_annotation_tracks.py ... \
-    --gemini-jsonl gemini_stage_annotation_results/run_xxx/stage_annotations_normalized.jsonl
+    --stage-jsonl stage_annotation_results/run_xxx/stage_annotations_normalized.jsonl \
+    --stage-label qwen-stage
 """
 import argparse
 import glob
@@ -75,7 +76,7 @@ def load_doc(directory, ep):
         return json.load(f)
 
 
-def load_gemini(jsonl_path):
+def load_stage_jsonl(jsonl_path):
     if not jsonl_path or not os.path.exists(jsonl_path):
         return {}
     out = {}
@@ -111,11 +112,11 @@ def standard_segments(doc):
     ]
 
 
-def gemini_segments(gemini_record, n_frames):
-    if not gemini_record:
+def stage_segments(stage_record, n_frames):
+    if not stage_record:
         return None
     segs = []
-    for st in gemini_record.get("stages", []):
+    for st in stage_record.get("stages", []):
         name = str(st.get("name", "adjust")).strip().lower() or "adjust"
         start = int(st.get("start_t", st.get("start_frame", 0)))
         end = int(st.get("end_t", st.get("end_frame", start)))
@@ -159,7 +160,7 @@ def episode_list(state_dir, eps_arg):
     )
 
 
-def render_one(args, ep, gemini_by_ep):
+def render_one(args, ep, stage_by_ep):
     state = load_doc(args.state, ep)
     qwen = load_doc(args.qwen, ep)
     fused = load_doc(args.fused, ep)
@@ -191,7 +192,7 @@ def render_one(args, ep, gemini_by_ep):
         ("state", standard_segments(state)),
         ("qwen", standard_segments(qwen)),
         ("fused", standard_segments(fused)),
-        ("gemini", gemini_segments(gemini_by_ep.get(ep), n_frames)),
+        (args.stage_label, stage_segments(stage_by_ep.get(ep), n_frames)),
     ]
     H = row0 + row_gap * len(tracks) + 42
     im = Image.new("RGB", (W, H), (18, 18, 22))
@@ -202,7 +203,7 @@ def render_one(args, ep, gemini_by_ep):
 
     d.text(
         (18, 12),
-        f"ep{ep:03d}  N={n_frames}  {n_frames / fps:.1f}s  state / qwen / fused / gemini-stage",
+        f"ep{ep:03d}  N={n_frames}  {n_frames / fps:.1f}s  state / qwen / fused / {args.stage_label}",
         fill=(245, 245, 245),
         font=title_font,
     )
@@ -232,6 +233,8 @@ def main():
     ap.add_argument("--qwen", required=True)
     ap.add_argument("--fused", required=True)
     ap.add_argument("--gemini-jsonl", default="")
+    ap.add_argument("--stage-jsonl", default="", help="Alias for --gemini-jsonl; normalized stage JSONL to draw as the fourth comparison row")
+    ap.add_argument("--stage-label", default="gemini", help="Label shown for the optional stage timeline row")
     ap.add_argument("--out", required=True)
     ap.add_argument("--eps", default="")
     ap.add_argument("--cam", default="observation.images.camera1")
@@ -241,10 +244,11 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    gemini_by_ep = load_gemini(args.gemini_jsonl)
+    stage_jsonl = args.stage_jsonl or args.gemini_jsonl
+    stage_by_ep = load_stage_jsonl(stage_jsonl)
     made = []
     for ep in episode_list(args.state, args.eps):
-        out = render_one(args, ep, gemini_by_ep)
+        out = render_one(args, ep, stage_by_ep)
         if out:
             made.append(out)
             print("saved", out)
@@ -256,7 +260,8 @@ def main():
                 "state": args.state,
                 "qwen": args.qwen,
                 "fused": args.fused,
-                "gemini_jsonl": args.gemini_jsonl,
+                "stage_jsonl": stage_jsonl,
+                "stage_label": args.stage_label,
                 "images": [os.path.basename(p) for p in made],
             },
             f,
