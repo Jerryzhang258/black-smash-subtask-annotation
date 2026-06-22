@@ -179,9 +179,9 @@ bash data_annotation/scripts/run_gemini_stage_annotation.sh
 ## Current Local Status
 
 The latest local pipeline is configured for Qwen2.5-VL-7B-AWQ served by vLLM as
-`qwen`. Full regeneration of 05/06/07 can be run with the commands above. During
-the most recent interrupted run, 05 completed state/Qwen/fused and qwen-stage was
-partway through; rerun the pipeline to regenerate a clean complete set.
+`qwen`. The latest full regeneration completed for datasets 05, 06, and 07,
+including state, qwen, fused, qwen-stage, and same-image visualizations. To
+refresh the artifacts, rerun the pipeline commands above.
 
 ## Citation
 
