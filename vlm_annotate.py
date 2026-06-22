@@ -118,6 +118,20 @@ FINE_HEAD = (
     'Return ONLY JSON: {{"frame": int}}'
 )
 
+P2_HISTORY_HEAD = (
+    "Same bimanual robot episode, task: \"{task}\".\n"
+    "We are refining ONLY p2_start_pour: the first frame where black powder visibly "
+    "starts leaving the test tube or first appears in the mortar.\n\n"
+    "The proprioceptive state signal already narrowed the search to frames {lo}-{hi}. "
+    "Below are chronological frames from that local window, each captioned with its "
+    "frame index (#idx) and time. Use before/after evidence: frames before p2 should "
+    "show no visible powder flow; frames after p2 should show pouring or powder in "
+    "the mortar. If powder is hard to see, choose the earliest frame where the tube "
+    "begins a sustained pouring tilt over the mortar and mark confidence low.\n\n"
+    "Return ONLY JSON:\n"
+    '{{"frame": int, "confidence": "high|medium|low", "reason": "short evidence"}}'
+)
+
 
 # ---------------- parsing ----------------
 def extract_json(text):
@@ -147,6 +161,52 @@ def parse_fine(text, default):
         return int(round(float(obj["frame"])))
     except Exception:
         return default
+
+
+def load_state_cps(state_ref, ep):
+    if not state_ref:
+        return None
+    path = os.path.join(state_ref, f"ep{ep:03d}_subtasks.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+        cps = doc.get("critical_points")
+        return [int(x) for x in cps] if isinstance(cps, list) and len(cps) == 6 else None
+    except Exception:
+        return None
+
+
+def refine_p2_with_history(backend, store, task, cps, state_cps, fps, args, flags):
+    T = store.n
+    state_p1, state_p2, state_p3 = state_cps[0], state_cps[1], state_cps[2]
+    w = int(args.p2_history_window_s * fps)
+    lo = max(0, state_p1 + 1, state_p2 - w)
+    hi = min(T - 1, state_p3 - 1, state_p2 + w)
+    if hi <= lo:
+        flags.append("p2 history refine skipped: invalid state window")
+        return cps[1], None
+
+    idxs = sample_idxs(lo, hi, args.p2_history_frames)
+    idxs = sorted(set(idxs + [max(lo, min(hi, state_p2)), max(lo, min(hi, cps[1]))]))
+    head = P2_HISTORY_HEAD.format(task=task, lo=lo, hi=hi)
+    raw = backend.ask(build_messages(task, store, idxs, fps, args.size, head))
+    obj = extract_json(raw) or {}
+    frame = parse_fine(raw, cps[1])
+    frame = max(lo, min(hi, frame))
+    meta = {
+        "old_frame": int(cps[1]),
+        "new_frame": int(frame),
+        "state_frame": int(state_p2),
+        "window": [int(lo), int(hi)],
+        "sampled_frames": [int(x) for x in idxs],
+        "confidence": obj.get("confidence"),
+        "reason": obj.get("reason", ""),
+    }
+    if os.environ.get("VLM_DEBUG"):
+        print("=== RAW p2 history response ===\n%s\n=== end ===" % raw, flush=True)
+    return frame, meta
 
 
 def enforce_order(cps, T, flags):
@@ -254,6 +314,7 @@ def annotate_one(backend, parquet, out_dir, ep, task, args):
     store = FrameStore(parquet, args.cam)
     T, fps = store.n, args.fps
     flags = []
+    p2_refinement = None
 
     # coarse
     idxs = sample_idxs(0, T - 1, args.n_frames)
@@ -282,11 +343,25 @@ def annotate_one(backend, parquet, out_dir, ep, task, args):
             cps[i] = parse_fine(backend.ask(build_messages(task, store, fidx, fps, args.size, fhead)), cps[i])
         cps = enforce_order(cps, T, flags)
 
+    if args.p2_history and args.state_ref:
+        state_cps = load_state_cps(args.state_ref, ep)
+        if state_cps is None:
+            flags.append("p2 history refine skipped: missing state reference")
+        else:
+            cps[1], p2_refinement = refine_p2_with_history(
+                backend, store, task, cps, state_cps, fps, args, flags
+            )
+            cps = enforce_order(cps, T, flags)
+
     doc = {"episode_index": ep, "task": task, "n_frames": T, "fps": fps,
            "annotator": "qwen-vl", "model": args.model,
-           "method": "qwen2.5-vl coarse(%d)%s, cam=%s" % (
-               args.n_frames, "+fine" if args.fine else "", args.cam),
+           "method": "qwen2.5-vl coarse(%d)%s%s, cam=%s" % (
+               args.n_frames,
+               "+fine" if args.fine else "",
+               "+state-guided-p2-history" if args.p2_history and args.state_ref else "",
+               args.cam),
            "notes": notes, "critical_points": cps, "critical_names": CRIT_NAMES,
+           "p2_history_refinement": p2_refinement,
            "subtask_starts": [0] + cps, "flags": flags,
            "n_subtasks": len(LABELS), "subtasks": subtasks_from_cps(cps, T, fps)}
     json.dump(doc, open(os.path.join(out_dir, f"ep{ep:03d}_subtasks.json"), "w"), indent=2)
@@ -327,6 +402,11 @@ def main():
     ap.add_argument("--no-fine", dest="fine", action="store_false")
     ap.add_argument("--fine-window-s", type=float, default=1.5, dest="fine_window_s")
     ap.add_argument("--fine-frames", type=int, default=16, dest="fine_frames")
+    ap.add_argument("--state-ref", default="", help="state annotation directory used to guide p2 history refinement")
+    ap.add_argument("--p2-history", action="store_true",
+                    help="refine p2_start_pour with chronological frames from the state-guided local window")
+    ap.add_argument("--p2-history-window-s", type=float, default=3.0, dest="p2_history_window_s")
+    ap.add_argument("--p2-history-frames", type=int, default=15, dest="p2_history_frames")
     ap.add_argument("--max-new-tokens", type=int, default=256, dest="max_new_tokens")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()

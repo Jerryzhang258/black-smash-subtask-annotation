@@ -28,6 +28,20 @@ mvt_zoom/
 mvt_annotations_smash_05/
 mvt_annotations_smash_06/
 
+# ---- generated pipeline outputs (regenerable, not pushed) ----
+annotations_*/
+annotations_*.log
+compare_tracks*/
+compare_tracks*.log
+*_comparison_index.html
+*_comparison_summary.json
+annotation_comparison_analysis.json
+gemini_stage_annotation_results*/
+
+# ---- local secrets ----
+data_annotation/config/api_env.local.sh
+.env
+
 # ---- local tooling / caches ----
 .claude/
 __pycache__/

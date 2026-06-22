@@ -22,6 +22,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("run_dir", type=Path)
     parser.add_argument("--model", default=os.environ.get("TTK_MODEL", "gemini-3.5-flash-low-反重力"))
+    parser.add_argument(
+        "--provider",
+        choices=["openai", "google"],
+        default="openai",
+        help="API provider. 'openai' means OpenAI-compatible endpoint; 'google' means official Gemini API via google-genai.",
+    )
     parser.add_argument("--api-key-env", default="TTK_API_KEY")
     parser.add_argument("--base-url-env", default="TTK_BASE_URL")
     parser.add_argument("--max-tokens", type=int, default=500)
@@ -31,12 +37,17 @@ def parse_args() -> argparse.Namespace:
 
 
 def make_jpeg_data_url(path: Path, max_side: int = 448) -> str:
+    data = make_jpeg_bytes(path, max_side=max_side)
+    b64 = base64.b64encode(data).decode("utf-8")
+    return f"data:image/jpeg;base64,{b64}"
+
+
+def make_jpeg_bytes(path: Path, max_side: int = 448) -> bytes:
     image = Image.open(path).convert("RGB")
     image.thumbnail((max_side, max_side))
     out = io.BytesIO()
     image.save(out, format="JPEG", quality=82)
-    b64 = base64.b64encode(out.getvalue()).decode("utf-8")
-    return f"data:image/jpeg;base64,{b64}"
+    return out.getvalue()
 
 
 def extract_json(text: str) -> dict[str, Any] | None:
@@ -182,18 +193,56 @@ def verify_stage_once(client: OpenAI, model: str, sample: dict[str, Any], image_
     return extract_json(raw_text), raw_text, latency
 
 
+def verify_stage_once_google(client: Any, model: str, sample: dict[str, Any], image_paths: list[tuple[str, int, Path]], max_tokens: int) -> tuple[dict[str, Any] | None, str, float]:
+    from google.genai import types
+
+    prompt = (
+        "You are verifying a robot stage annotation. "
+        "Compare the stage start, middle, end, and after-stage frames from two external cameras. "
+        "Decide whether the expected future observation is visually supported.\n\n"
+        f"Stage name: {sample.get('stage_name')}\n"
+        f"Stage interval: {sample.get('stage_interval')}\n"
+        f"Prediction prompt: {sample.get('prediction_prompt')}\n"
+        f"Expected future observation: {sample.get('expected_future_observation')}\n\n"
+        "Return strict JSON only:\n"
+        '{"pass": true, "score": 0.0, "reason": "short visual evidence"}\n'
+        "Score scale: 1.0 clear support, 0.75 mostly supported, 0.5 partial, 0.25 weak, 0.0 unsupported or opposite."
+    )
+    parts: list[Any] = [types.Part.from_text(text=prompt)]
+    for camera, t, path in image_paths:
+        parts.append(types.Part.from_text(text=f"{camera} frame t={t}:"))
+        parts.append(types.Part.from_bytes(data=make_jpeg_bytes(path), mime_type="image/jpeg"))
+    started = time.time()
+    response = client.models.generate_content(
+        model=model,
+        contents=parts,
+        config=types.GenerateContentConfig(
+            temperature=0.0,
+            max_output_tokens=max_tokens,
+            response_mime_type="application/json",
+        ),
+    )
+    latency = round(time.time() - started, 2)
+    raw_text = response.text or ""
+    return extract_json(raw_text), raw_text, latency
+
+
 def verify_stage(
-    client: OpenAI,
+    client: Any,
     model: str,
     sample: dict[str, Any],
     image_paths: list[tuple[str, int, Path]],
     max_tokens: int,
     retries: int,
+    provider: str,
 ) -> tuple[dict[str, Any] | None, str, float, str | None]:
     last_error = None
     for attempt in range(1, retries + 1):
         try:
-            parsed, raw_text, latency = verify_stage_once(client, model, sample, image_paths, max_tokens)
+            if provider == "google":
+                parsed, raw_text, latency = verify_stage_once_google(client, model, sample, image_paths, max_tokens)
+            else:
+                parsed, raw_text, latency = verify_stage_once(client, model, sample, image_paths, max_tokens)
             return parsed, raw_text, latency, None
         except Exception as exc:
             last_error = repr(exc)
@@ -208,7 +257,12 @@ def verify_stage(
 
 def main() -> None:
     args = parse_args()
-    client = OpenAI(api_key=os.environ[args.api_key_env], base_url=os.environ[args.base_url_env])
+    if args.provider == "google":
+        from google import genai
+
+        client = genai.Client(api_key=os.environ[args.api_key_env])
+    else:
+        client = OpenAI(api_key=os.environ[args.api_key_env], base_url=os.environ[args.base_url_env])
     normalized_path = args.run_dir / "stage_annotations_normalized.jsonl"
     samples_path = args.run_dir / "prediction_self_check_samples.jsonl"
     out_path = args.run_dir / "future_verification_results.jsonl"
@@ -271,7 +325,7 @@ def main() -> None:
                 continue
             paths = stage_image_paths(args.run_dir, int(sample["episode_index"]), list(sample["check_frames"]))
             parsed, raw_text, latency, error = verify_stage(
-                client, args.model, sample, paths, args.max_tokens, args.retries
+                client, args.model, sample, paths, args.max_tokens, args.retries, args.provider
             )
             score = None
             if parsed is not None:

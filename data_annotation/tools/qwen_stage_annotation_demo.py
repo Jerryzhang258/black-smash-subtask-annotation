@@ -17,8 +17,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from openai import OpenAI
 from PIL import Image
+from openai import OpenAI
 
 
 DEFAULT_DATASET_ROOT = Path("/root/autodl-tmp/.cache/huggingface/lerobot/chaoyi/0118_data")
@@ -32,6 +32,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--meta-root", type=Path, default=DEFAULT_META_ROOT)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--model", default="qwen3-vl-flash")
+    parser.add_argument(
+        "--provider",
+        choices=["openai", "google"],
+        default="openai",
+        help="API provider. 'openai' means OpenAI-compatible endpoint; 'google' means official Gemini API via google-genai.",
+    )
     parser.add_argument("--api-key-env", default="DASHSCOPE_API_KEY")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--base-url-env", default="")
@@ -42,8 +48,11 @@ def parse_args() -> argparse.Namespace:
         default="observation.images.camera0,observation.images.camera1",
         help="Comma-separated image columns to send, e.g. observation.images.camera0,observation.images.camera1",
     )
-    parser.add_argument("--frame-sampling", choices=["uniform3", "all"], default="all")
+    parser.add_argument("--frame-sampling", choices=["uniform3", "uniform7", "all"], default="all")
     parser.add_argument("--max-tokens", type=int, default=900)
+    parser.add_argument("--left-gripper-dim", type=int, default=6)
+    parser.add_argument("--right-gripper-dim", type=int, default=13)
+    parser.add_argument("--signal-detail", choices=["full", "compact"], default="full")
     parser.add_argument(
         "--task-description",
         default="",
@@ -110,6 +119,8 @@ def hand_summary(values: np.ndarray) -> dict[str, Any]:
 def select_frame_indices(num_frames: int, frame_sampling: str) -> list[int]:
     if frame_sampling == "all":
         return list(range(num_frames))
+    if frame_sampling == "uniform7":
+        return sorted(set(int(round(x)) for x in np.linspace(0, num_frames - 1, min(7, num_frames))))
     return sorted(set([0, int(round((num_frames - 1) / 2)), num_frames - 1]))
 
 
@@ -127,17 +138,19 @@ def resolve_task_description(df: pd.DataFrame, task_map: dict[int, str], task_de
     return task_map.get(task_index, f"task_index_{task_index}")
 
 
-def build_summary(df: pd.DataFrame) -> dict[str, Any]:
+def build_summary(df: pd.DataFrame, left_gripper_dim: int, right_gripper_dim: int) -> dict[str, Any]:
     states = np.stack(df["observation.state"].to_numpy())
     episode_id = int(df["episode_index"].iloc[0])
-    left = states[:, 6]
-    right = states[:, 13]
+    left = states[:, left_gripper_dim]
+    right = states[:, right_gripper_dim]
     left_summary = hand_summary(left)
     right_summary = hand_summary(right)
     n = len(df)
     return {
         "episode_index": episode_id,
         "episode_length": n,
+        "left_gripper_dim": left_gripper_dim,
+        "right_gripper_dim": right_gripper_dim,
         "left_gripper": left_summary,
         "right_gripper": right_summary,
     }
@@ -213,8 +226,24 @@ def save_gripper_plot(summary: dict[str, Any], df: pd.DataFrame, out_dir: Path) 
     return str(path)
 
 
-def build_prompt(summary: dict[str, Any], task_description: str) -> str:
-    compact = {k: v for k, v in summary.items() if k not in {"keyframe_files", "gripper_plot"}}
+def compact_signal_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    compact = {}
+    for key, value in summary.items():
+        if key in {"keyframe_files", "gripper_plot"}:
+            continue
+        if key in {"left_gripper", "right_gripper"} and isinstance(value, dict):
+            compact[key] = {k: v for k, v in value.items() if k not in {"full_points", "full_velocity"}}
+        else:
+            compact[key] = value
+    return compact
+
+
+def build_prompt(summary: dict[str, Any], task_description: str, signal_detail: str = "full") -> str:
+    compact = (
+        compact_signal_summary(summary)
+        if signal_detail == "compact"
+        else {k: v for k, v in summary.items() if k not in {"keyframe_files", "gripper_plot"}}
+    )
     return (
         "You are a robotics dataset annotation assistant. "
         "Given a task description, full gripper width/velocity sequences, and camera frames, split this episode into semantic stages.\n\n"
@@ -228,7 +257,7 @@ def build_prompt(summary: dict[str, Any], task_description: str) -> str:
         "5. expected_future_observation should state what should become visible several frames after the start of this stage if the prediction is correct. This will be checked later in a separate batch self-test after all episodes are labeled.\n\n"
         "Episode summary:\n"
         f"{json.dumps(compact, ensure_ascii=False, indent=2)}\n\n"
-        "Return schema:\n"
+        "Return exactly one JSON object matching this schema. Do not return a JSON array.\n"
         "{\n"
         '  "episode_index": int,\n'
         '  "stages": [\n'
@@ -238,11 +267,22 @@ def build_prompt(summary: dict[str, Any], task_description: str) -> str:
         '      "end_t": 10,\n'
         '      "prediction_prompt": "Move the left gripper toward the orange lid.",\n'
         '      "expected_future_observation": "Within the next few frames, the left gripper should be closer to the orange lid.",\n'
-        '      "reason": "short evidence"\n'
+        '      "reason": "very short evidence, <= 8 words"\n'
         "    }\n"
         "  ]\n"
         "}"
     )
+
+
+def normalize_parsed_json(obj: Any) -> dict[str, Any] | None:
+    if isinstance(obj, dict):
+        return obj
+    if isinstance(obj, list):
+        if len(obj) == 1 and isinstance(obj[0], dict) and "stages" in obj[0]:
+            return obj[0]
+        if all(isinstance(item, dict) for item in obj):
+            return {"stages": obj}
+    return None
 
 
 def extract_json(text: str) -> dict[str, Any] | None:
@@ -250,14 +290,25 @@ def extract_json(text: str) -> dict[str, Any] | None:
     stripped = re.sub(r"^```(?:json)?", "", stripped)
     stripped = re.sub(r"```$", "", stripped).strip()
     try:
-        return json.loads(stripped)
+        return normalize_parsed_json(json.loads(stripped))
     except json.JSONDecodeError:
         pass
+    candidates = []
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        start = stripped.find(open_ch)
+        end = stripped.rfind(close_ch)
+        if start >= 0 and end > start:
+            candidates.append(stripped[start : end + 1])
+    for candidate in candidates:
+        try:
+            return normalize_parsed_json(json.loads(candidate))
+        except json.JSONDecodeError:
+            pass
     start = stripped.find("{")
     end = stripped.rfind("}")
     if start >= 0 and end > start:
         try:
-            return json.loads(stripped[start : end + 1])
+            return normalize_parsed_json(json.loads(stripped[start : end + 1]))
         except json.JSONDecodeError:
             return None
     return None
@@ -276,6 +327,29 @@ def call_qwen(client: OpenAI, model: str, prompt: str, frame_paths: list[dict[st
         max_tokens=max_tokens,
     )
     return response.choices[0].message.content or "", response
+
+
+def call_google_gemini(client: Any, model: str, prompt: str, frame_paths: list[dict[str, Any]], max_tokens: int) -> tuple[str, Any]:
+    from google.genai import types
+
+    parts: list[Any] = [types.Part.from_text(text=prompt)]
+    for item in frame_paths:
+        image_bytes = Path(item["path"]).read_bytes()
+        parts.append(types.Part.from_text(text=f"{item.get('camera', 'camera')} frame t={item['t']}:"))
+        parts.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
+    config_kwargs = {
+        "temperature": 0.1,
+        "max_output_tokens": max_tokens,
+        "response_mime_type": "application/json",
+    }
+    if hasattr(types, "ThinkingConfig"):
+        config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+    response = client.models.generate_content(
+        model=model,
+        contents=parts,
+        config=types.GenerateContentConfig(**config_kwargs),
+    )
+    return response.text or "", response
 
 
 def validate_result(parsed: dict[str, Any] | None, episode_length: int) -> dict[str, Any]:
@@ -352,15 +426,20 @@ def main() -> None:
         raise RuntimeError(f"No episode parquet files found under {args.dataset_root}")
     client = None
     if not args.dry_run:
-        base_url = args.base_url
-        if args.base_url_env:
-            base_url = os.environ[args.base_url_env]
-        if not base_url:
-            base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        client = OpenAI(
-            api_key=os.environ[args.api_key_env],
-            base_url=base_url,
-        )
+        if args.provider == "google":
+            from google import genai
+
+            client = genai.Client(api_key=os.environ[args.api_key_env])
+        else:
+            base_url = args.base_url
+            if args.base_url_env:
+                base_url = os.environ[args.base_url_env]
+            if not base_url:
+                base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            client = OpenAI(
+                api_key=os.environ[args.api_key_env],
+                base_url=base_url,
+            )
 
     jsonl_path = run_dir / "stage_annotations.jsonl"
     csv_path = run_dir / "summary.csv"
@@ -370,13 +449,13 @@ def main() -> None:
             df = pd.read_parquet(ep_path)
             task_description = resolve_task_description(df, task_map, args.task_description)
             camera_keys = parse_camera_keys(args.camera_keys)
-            summary = build_summary(df)
+            summary = build_summary(df, args.left_gripper_dim, args.right_gripper_dim)
             frame_indices = select_frame_indices(summary["episode_length"], args.frame_sampling)
             keyframes = save_keyframes(df, summary, camera_keys, keyframe_dir, frame_indices)
             plot_path = save_gripper_plot(summary, df, plot_dir)
             summary["keyframe_files"] = keyframes
             summary["gripper_plot"] = plot_path
-            prompt = build_prompt(summary, task_description)
+            prompt = build_prompt(summary, task_description, args.signal_detail)
             started = time.time()
             raw_text = ""
             response_id = None
@@ -387,9 +466,16 @@ def main() -> None:
             else:
                 try:
                     assert client is not None
-                    raw_text, response = call_qwen(client, args.model, prompt, keyframes, args.max_tokens)
+                    if args.provider == "google":
+                        raw_text, response = call_google_gemini(client, args.model, prompt, keyframes, args.max_tokens)
+                    else:
+                        raw_text, response = call_qwen(client, args.model, prompt, keyframes, args.max_tokens)
                     response_id = getattr(response, "id", None)
-                    usage = response.usage.model_dump() if getattr(response, "usage", None) else None
+                    usage_obj = getattr(response, "usage", None) or getattr(response, "usage_metadata", None)
+                    if usage_obj is not None and hasattr(usage_obj, "model_dump"):
+                        usage = usage_obj.model_dump()
+                    elif usage_obj is not None:
+                        usage = str(usage_obj)
                     parsed = extract_json(raw_text)
                 except Exception as exc:
                     parsed = None

@@ -22,7 +22,7 @@ data_annotation/
 
 核心脚本：
 
-- `tools/qwen_stage_annotation_demo.py`：主标注脚本。虽然文件名里有 qwen，但它使用 OpenAI-compatible client，可以通过 `--model`、`--api-key-env`、`--base-url-env` 调 Gemini 或 Qwen。
+- `tools/qwen_stage_annotation_demo.py`：主标注脚本。虽然文件名里有 qwen，但它既支持 OpenAI-compatible endpoint，也支持官方 Google Gemini API（`--provider google`）。
 - `tools/postprocess_qwen_stage_results.py`：对 API 输出做 stage 名称和 interval 质量校验，生成 `stage_annotations_normalized.jsonl`。
 - `tools/batch_self_check_predictions.py`：为每个 stage 生成后续图像自测样本，生成 `prediction_self_check_samples.jsonl`。
 - `tools/run_future_verification.py`：调用 Gemini 对预测式 prompt 做 future verification，并计算 `quality_summary.json`。
@@ -35,6 +35,10 @@ data_annotation/
 export TTK_API_KEY="你的 key"
 export TTK_BASE_URL="https://api.ttk.homes/v1"
 export TTK_MODEL="gemini-3.5-flash-low-反重力"
+
+# 官方 Google Gemini API
+export GEMINI_API_KEY="你的 Google AI Studio key"
+export GEMINI_MODEL="gemini-2.5-flash"
 ```
 
 或者复制模板：
@@ -86,6 +90,19 @@ bash data_annotation/scripts/run_gemini_stage_annotation.sh
 
 ```bash
 NUM_EPISODES=10 OUT_ROOT=debug_stage_annotation \
+bash data_annotation/scripts/run_gemini_stage_annotation.sh
+```
+
+使用官方 Gemini API：
+
+```bash
+PROVIDER=google \
+DATASET_ROOT=/home/hillbot/black_smash_07 \
+META_ROOT=/home/hillbot/black_smash_07/meta \
+OUT_ROOT=annotations_gemini_stage_07 \
+NUM_EPISODES=100 \
+FRAME_SAMPLING=uniform7 \
+SIGNAL_DETAIL=compact \
 bash data_annotation/scripts/run_gemini_stage_annotation.sh
 ```
 
@@ -144,6 +161,5 @@ stage_quality_score =
 - `/root/.config/api-keys/`；
 - 大规模 `keyframes/`、`gripper_plots/`、实验结果目录；
 - 服务器私有日志。
-
 
 

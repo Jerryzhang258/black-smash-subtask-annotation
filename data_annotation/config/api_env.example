@@ -9,3 +9,6 @@ export TTK_MODEL="gemini-3.5-flash"
 # Optional: Qwen/DashScope endpoint
 export DASHSCOPE_API_KEY="REPLACE_WITH_YOUR_DASHSCOPE_KEY"
 
+# Official Google Gemini API, from https://aistudio.google.com/app/apikey
+export GEMINI_API_KEY="REPLACE_WITH_YOUR_GOOGLE_AI_STUDIO_KEY"
+export GEMINI_MODEL="gemini-2.5-flash"

@@ -43,7 +43,10 @@ the 20-D `observation.state` in frame index (rate-independent), never from pixel
 
 **Stage 1 — VLM prior.** `Qwen2.5-VL` (transformers or a vLLM/OpenAI endpoint)
 reads contrast-enhanced, center-cropped frames and proposes the 6 points; it owns
-the visual point (p2) and cross-checks the rest.
+the visual point (p2) and cross-checks the rest. For p2, the pipeline can use a
+state-guided temporal refinement pass: state narrows the search to the tube-held
+pour window, then Qwen sees chronological before/after frames and selects the
+first visible powder-flow frame.
 
 **Stage 3 — fusion + targeted review.** Each point takes its owner modality's
 value; points where `|VLM − state| > τ` are flagged as `review_points`, so human
@@ -100,14 +103,121 @@ directly as policy supervision).
 | `batch_annotate.py` | Stage 2 — proprioceptive segmentation |
 | `vlm_annotate.py` | Stage 1 — Qwen2.5-VL (`--backend qwen-local`/`openai`); `test_qwen_vl.py` smoke test |
 | `fuse_annotations.py` | per-point fusion + disagreement flagging |
+| `scripts/run_annotation_pipeline.sh` | end-to-end state / Qwen / fused / visualization pipeline for one dataset |
 | `annotate_gui.py` | Stage 3 — human review GUI |
 | `visualize_annotation.py`, `zoom_boundary.py` | timeline/keyframe and boundary-zoom visualization |
+| `visualize_annotation_tracks.py` | same-image comparison of state, Qwen, fused, and optional Gemini tracks |
 | `outlier_report.py`, `compare_timelines.py`, `verify_tail.py` | QA / consistency checks |
 | `analyze_subtasks.py`, `inspect_episode.py` | diagnostics |
 | `docs/INSTALL_QWEN*.md` | Stage-1 setup (Windows / Linux + RTX 5080, vLLM) |
 | `scripts/start_vllm.sh` | one-shot vLLM launcher (CUDA 13 env + FlashInfer symlinks) |
+| `data_annotation/` | optional Gemini / OpenAI-compatible stage annotation workflow |
 
-## Setup and usage
+## End-to-End Pipeline
+
+Start the local Qwen server in one terminal:
+
+```bash
+./scripts/start_vllm.sh /home/hillbot/models/Qwen2.5-VL-7B-Instruct-AWQ
+```
+
+Then run the reproducible pipeline from the repository root. It writes
+`annotations_state_<id>/`, `annotations_qwen_<id>/`, `annotations_fused_<id>/`,
+and `compare_tracks_<id>/`, all ignored by git because they are regenerable data
+artifacts.
+
+```bash
+PYTHON_BIN=/home/hillbot/miniforge3/envs/qwenvl/bin/python \
+DATASET_ROOT=/home/hillbot/black_smash_05 DATASET_ID=05 \
+bash scripts/run_annotation_pipeline.sh
+
+PYTHON_BIN=/home/hillbot/miniforge3/envs/qwenvl/bin/python \
+DATASET_ROOT=/home/hillbot/black_smash_06 DATASET_ID=06 \
+bash scripts/run_annotation_pipeline.sh
+
+PYTHON_BIN=/home/hillbot/miniforge3/envs/qwenvl/bin/python \
+DATASET_ROOT=/home/hillbot/black_smash_07 DATASET_ID=07 \
+bash scripts/run_annotation_pipeline.sh
+```
+
+Useful switches:
+
+```bash
+# only a subset of episodes
+EPS=0,1,2 DATASET_ROOT=/home/hillbot/black_smash_07 DATASET_ID=07 \
+bash scripts/run_annotation_pipeline.sh
+
+# reuse existing annotations and only redraw the comparison images
+RUN_STATE=0 RUN_QWEN=0 RUN_FUSED=0 RUN_VIZ=1 \
+DATASET_ROOT=/home/hillbot/black_smash_07 DATASET_ID=07 \
+bash scripts/run_annotation_pipeline.sh
+
+# include an existing Gemini normalized jsonl as the fourth row
+GEMINI_JSONL=annotations_gemini_stage_07/run_xxx/stage_annotations_normalized.jsonl \
+DATASET_ROOT=/home/hillbot/black_smash_07 DATASET_ID=07 \
+bash scripts/run_annotation_pipeline.sh
+
+# disable state-guided p2 history refinement for a stricter pure-Qwen baseline
+QWEN_P2_HISTORY=0 DATASET_ROOT=/home/hillbot/black_smash_07 DATASET_ID=07 \
+bash scripts/run_annotation_pipeline.sh
+```
+
+The visualization can also be called directly:
+
+```bash
+python visualize_annotation_tracks.py \
+  --data /home/hillbot/black_smash_07/data/chunk-000 \
+  --state annotations_state_07 \
+  --qwen annotations_qwen_07 \
+  --fused annotations_fused_07 \
+  --out compare_tracks_07 \
+  --gemini-jsonl annotations_gemini_stage_07/run_xxx/stage_annotations_normalized.jsonl
+```
+
+## Optional Gemini Stage
+
+Gemini support lives under `data_annotation/`. Copy the example config and keep
+the local file private:
+
+```bash
+cp data_annotation/config/api_env.example data_annotation/config/api_env.local.sh
+# edit GEMINI_API_KEY and GEMINI_MODEL in data_annotation/config/api_env.local.sh
+```
+
+Run with the official Google Gemini API:
+
+```bash
+PROVIDER=google \
+DATASET_ROOT=/home/hillbot/black_smash_07 \
+META_ROOT=/home/hillbot/black_smash_07/meta \
+OUT_ROOT=annotations_gemini_stage_07 \
+NUM_EPISODES=100 \
+FRAME_SAMPLING=uniform7 \
+SIGNAL_DETAIL=compact \
+PYTHON_BIN=/home/hillbot/miniforge3/envs/qwenvl/bin/python \
+bash data_annotation/scripts/run_gemini_stage_annotation.sh
+```
+
+`api_env.local.sh`, annotation folders, visualization folders, and logs are
+ignored by git.
+
+## Current Local QA Summary
+
+Latest local run across datasets 05, 06, and 07:
+
+| dataset | episodes | state | Qwen vs state MAE | mean IoU | fused points flagged | Gemini valid |
+|---|---:|---|---:|---:|---:|---:|
+| 05 | 232 | complete, 0 flags | 5.32 s | 0.211 | 1299 / 1392 (93.3%) | 21 / 232 |
+| 06 | 50 | complete, 0 flags | 9.33 s | 0.162 | 292 / 300 (97.3%) | 14 / 50 |
+| 07 | 100 | complete, 0 flags | 9.13 s | 0.173 | 581 / 600 (96.8%) | 1 / 100 |
+
+Interpretation: state labels are stable and complete; Qwen7B is useful as a
+semantic cross-check but remains too coarse for direct boundary supervision; the
+fused labels therefore mostly keep state boundaries and flag Qwen disagreements
+for review. Gemini results were limited by API quota in this run, so they are
+treated as an optional fourth visual track rather than a complete comparison.
+
+## Manual Usage
 
 ```bash
 # Stage 2 / 3 need only: pandas numpy pillow (+ tkinter for the GUI)
