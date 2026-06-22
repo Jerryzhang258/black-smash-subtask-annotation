@@ -1,99 +1,76 @@
-# Next step (P2): make the pour leave the VLM
+# P2: state-based pour detector — how to validate
 
-**Goal.** Today p2 `start_pour` is the only critical point localized by the VLM,
-and the VLM is coarse on this low-light fisheye footage. The pour is physically a
-**wrist rotation** of the tube arm, so it should be detectable from
-`observation.state`. If a state detector localizes p2 tightly, the arbiter will
-hand the pour to state automatically (lower sigma wins) — no code or table edit,
-just a schema field — and the weakest VLM dependency disappears.
+The authoritative plan is [`docs/P2_ORIENTATION_OPTIMIZATION.md`](../../docs/P2_ORIENTATION_OPTIMIZATION.md).
+`OrientationDetector` now implements that plan (phase-gated window, directional
+sustained-tilt onset, abstain, calibrated sigma). This file is just the runbook
+to find the wrist dims and validate on the server, where `observation.state` lives.
 
-The framework is already wired for this: `OrientationDetector` exists but stays
-**inert until the schema names the wrist dims** (`state_layout.tube_wrist_dims`).
-So the whole task is: *find those dims, put them in the schema, validate.*
+The framework reproduces current fused outputs when orientation is off (verified
+on 05/06/07), so orientation stays **opt-in** until it passes the protocol below.
 
----
-
-## Do this on the server (observation.state is not in this checkout)
-
-### Step 1 — find the wrist dims
+## 1. Find the wrist dims (cross-dataset)
 
 ```bash
-git fetch origin
-git checkout feature/confidence-arbitration-framework
+git fetch origin && git checkout feature/p2-orientation-detector
 
 python data_annotation/framework/tools/probe_state_layout.py \
-    --data       /home/hillbot/black_smash_07/data/chunk-000 \
-    --info       /home/hillbot/black_smash_07/meta/info.json \
-    --state-ann  annotations_state_07 \
-    --eps 0,1,2,3,4,5,6,7,8,9
+    --dataset 05:/home/hillbot/black_smash_05/data/chunk-000:annotations_state_05 \
+    --dataset 06:/home/hillbot/black_smash_06/data/chunk-000:annotations_state_06 \
+    --dataset 07:/home/hillbot/black_smash_07/data/chunk-000:annotations_state_07
 ```
 
-What it does (read-only, prints only):
-- prints the state feature names from `info.json`. For these datasets `names` is
-  usually just `["observation.state"]` (no per-dim labels) — if so, ignore it and
-  use the table below;
-- ranks the tube-arm, non-gripper dims by how sharply they move **right at the
-  labelled pour onset (p2)** while the arm is already settled over the mortar.
+It prints a per-dataset and a cross-dataset ranking (no hard threshold) and a
+suggested `tube_wrist_dims`. Prior runs pointed at dims 2 and 5.
 
-It ends with a ready-to-paste line, e.g.:
+## 2. Set the dims in the schema
 
-```
-"tube_wrist_dims": [5, 6]   <-- the dims that stood out
-```
-
-If nothing stands out, widen the search: `--window-s 0.8` and more `--eps`. If the
-tube arm is not dims 0–9 on your data, set `--tube-arm-dims`.
-
-### Step 2 — put the dims in the schema
-
-Edit `data_annotation/framework/schemas/black_smash.json`, add the dims under
-`state_layout`:
+`schemas/black_smash.json` → `state_layout`:
 
 ```json
-"state_layout": {
-  "tube_gripper": 3,
-  "pestle_gripper": 13,
-  "grip_dims": [3, 4, 13, 14],
-  "tube_wrist_dims": [5, 6]
-}
+"tube_wrist_dims": [2, 5]
 ```
 
-That single field activates `OrientationDetector`.
+You can tune the detector without code via `state_layout.p2_orientation`
+(`transport_delay_s`, `hold_frames`, `delta_threshold`, …) — defaults are in
+`detectors.py:DEFAULT_ORIENTATION_CFG`.
 
-### Step 3 — run with the detector on and compare
+## 3. Evaluate (no production change)
 
 ```bash
-python -m data_annotation.framework.fuse parquet \
+python data_annotation/framework/tools/eval_orientation_p2.py \
     --data /home/hillbot/black_smash_07/data/chunk-000 \
-    --vlm  annotations_qwen_07 \
-    --out  /tmp/fused_p2 \
-    --orientation \
-    --eps 0,1,2,3,4,5,6,7,8,9
+    --ref-fused annotations_fused_07 --wrist-dims 2,5
 ```
 
-Then look at p2 in `/tmp/fused_p2/ep*_subtasks.json`:
-- `sources[1]` should now read `orientation` (state won the pour), and
-- `sigmas[1]` should be small (~6) instead of falling back to the state proxy (~25).
+Prints the protocol metrics: fire/abstain counts, sigma split,
+median/mean/max `|orientation_p2 − fused_p2|`, `p2 − p1` gap, count `p2 − p1 ≤ 10`,
+count outside `[p1+30, p3−10]`, and the worst episodes.
 
-Sanity-check a few against the camera frames (or the existing qwen p2) to confirm
-the state-detected pour is actually on the powder-leaving-the-tube moment.
+**Acceptance** (from the plan): `p2 − p1 ≤ 10` near zero, median
+`|orientation_p2 − fused_p2|` clearly below the current Qwen/state disagreement,
+outliers visually explainable, abstains on uncertain episodes.
 
-### Step 4 — decide
+## 4. Eyeball the cases
 
-- **Looks right** → set `--orientation` on in `scripts/run_annotation_pipeline.sh`,
-  regenerate 05/06/07, and the pour no longer needs the VLM.
-- **Noisy / wrong dims** → re-run the probe with a wider window / more episodes, or
-  tell me the ranked table and I'll tune `OrientationDetector`'s onset logic.
+```bash
+python data_annotation/framework/tools/plot_orientation_p2.py \
+    --data /home/hillbot/black_smash_07/data/chunk-000 \
+    --ref-fused annotations_fused_07 --wrist-dims 2,5 \
+    --eps 0,1,2,3,4 --out compare_tracks_07/orientation_debug
+```
 
----
+One PNG per episode: the wrist dim(s) with p1 / ref p2 / orientation p2 / p3 and
+the search window. Check best matches, big disagreements, early-p2, abstains.
 
-## What I need from you to finish writing the detector
+## 5. Decide
 
-`OrientationDetector` currently uses a generic "first sustained motion spike in the
-held window" heuristic on the named dims. To make it precise I need the **probe's
-ranked table** (or just the chosen `tube_wrist_dims`). With that I can:
-- pick rotation vs translation dims correctly,
-- tune the onset criterion (roll/tilt threshold) to the real signal,
-- set a calibrated sigma from the spread of detected vs labelled p2.
+Only if the protocol passes: enable `--orientation` in
+`scripts/run_annotation_pipeline.sh` and regenerate. Otherwise re-run the probe
+(wider window / more dims) or adjust `p2_orientation` config, and tell me the
+`eval_orientation_p2.py` summary — I can tune the onset logic from those numbers.
 
-Paste the probe output here and I'll finish P2 and validate it.
+## What I still need from you
+
+The `eval_orientation_p2.py` summary on 05/06/07 (fire/abstain counts and the
+`|Δ|` / gap stats). That tells me whether to tighten the window, change the
+strength calibration, or pick the dim per-dataset.

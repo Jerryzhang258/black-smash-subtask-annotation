@@ -85,7 +85,7 @@ understand) and `subtasks`. No Python changes if the events reuse existing types
 |---|---|---|
 | **P0** | **done** | framework + arbiter reproduce legacy fusion (regression green); signal path reuses the proven `segment_episode` |
 | **P1** | **done** | OWNER table removed; ownership derived from sigma + schema config |
-| **P2** | scaffolded | `OrientationDetector` lets the pour leave VLM; inert until the schema names `tube_wrist_dims`, and **must be validated on real episodes** (no raw data in this checkout) |
+| **P2** | **implemented · pending validation** | `OrientationDetector` lets the pour leave VLM (phase-gated window, directional sustained tilt, abstain, calibrated sigma — per `docs/P2_ORIENTATION_OPTIMIZATION.md`). Opt-in via `tube_wrist_dims`; validate on the server with `tools/eval_orientation_p2.py` before enabling. See `NEXT_STEPS_P2.md`. |
 | **P3** | future | replace `segment_episode` internals with changepoint / HMM segmentation per detector |
 
 ## Caveats

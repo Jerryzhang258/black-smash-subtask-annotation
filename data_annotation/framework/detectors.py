@@ -122,15 +122,71 @@ class SignalStateDetector(Detector):
         return out
 
 
-class OrientationDetector(Detector):
-    """EXPERIMENTAL (phase P2): detect the pour onset from wrist rotation in
-    observation.state instead of from vision.
+# OrientationDetector tunables (override per task via schema.state_layout["p2_orientation"]).
+DEFAULT_ORIENTATION_CFG = {
+    "transport_delay_s": 1.0,    # don't search until the tube is over the mortar
+    "release_margin_s": 0.2,     # stop searching before release
+    "min_pour_after_grasp": 30,  # hard guard: p2 >= p1 + this (frames)
+    "min_before_release": 10,    # hard guard: p2 <= p3 - this (frames)
+    "smooth_s": 0.3,             # low-pass window; kills jitter so noise has no long runs
+    "hold_frames": 10,           # the tilt must keep one direction at least this long
+    "delta_threshold": 1.3,      # net tilt over the run, in std units, to count as a pour
+    "strong_strength": 2.0,      # sustained tilt (std) at/above this -> sigma 6
+    "weak_strength": 1.0,        # at/below this after a hit -> weakest (sigma 18)
+}
 
-    Inert until the schema's state_layout names the held arm's wrist dimensions,
-    e.g. "tube_wrist_dims": [..]. Once enabled it competes with the VLM purely on
-    sigma -- if its localization is tight it will win the pour automatically, with
-    no OWNER-table edit. Quality must be validated on real episodes before trusting
-    it (no raw data is available in this checkout)."""
+
+def _scan_tilt(sm, slope, sd, lo, hi, cfg, np):
+    """Strongest sustained, directional tilt onset inside [lo, hi).
+
+    Pour = a monotonic rotation, so we scan for maximal constant-slope-sign runs
+    (on the smoothed signal) of at least hold_frames whose net displacement clears
+    delta_threshold standard deviations. Transport jitter has no such long run, so
+    the detector abstains -- returns (None, 0.0, 0) -- instead of emitting it.
+    Returns (onset, strength, direction) for the run with the largest displacement."""
+    hold = cfg["hold_frames"]
+    thr = cfg["delta_threshold"]
+    sgn = np.sign(slope)
+    best = (None, 0.0, 0)
+    t = lo
+    while t < hi:
+        s = sgn[t]
+        if s == 0:
+            t += 1
+            continue
+        e = t
+        while e < hi and sgn[e] == s:
+            e += 1
+        if e - t >= hold:
+            disp = abs(sm[e - 1] - sm[t]) / sd
+            if disp >= thr and disp > best[1]:
+                best = (t, float(disp), int(s))
+        t = e
+    return best
+
+
+def _sigma_from_strength(strength, cfg):
+    """Calibrated sigma: a strong, clean tilt is trustworthy (6); a weak one is
+    not (up to 18), so the arbiter prefers state only when the signal is good."""
+    if strength >= cfg["strong_strength"]:
+        return 6.0
+    span = max(cfg["strong_strength"] - cfg["weak_strength"], 1e-6)
+    frac = min(max((strength - cfg["weak_strength"]) / span, 0.0), 1.0)   # 0..1
+    return 18.0 - 6.0 * frac
+
+
+class OrientationDetector(Detector):
+    """Phase P2: detect the pour onset (p2) from tube-arm wrist rotation in
+    observation.state, so the pour can leave the VLM. Implements the plan in
+    docs/P2_ORIENTATION_OPTIMIZATION.md:
+
+      * gate the search to [p1 + transport_delay, p3 - margin] (skip lift/transport);
+      * fire only on a sustained, directional tilt -- not any motion spike;
+      * abstain (emit nothing) when no clean onset exists, vs forcing a bad p2;
+      * report a calibrated sigma so the arbiter prefers state only when it is good.
+
+    Inert until the schema names state_layout.tube_wrist_dims. Validate on real
+    episodes (tools/eval_orientation_p2.py) before enabling in production."""
 
     name = "orientation"
     modality = "state"
@@ -142,35 +198,53 @@ class OrientationDetector(Detector):
         wrist_dims = schema.state_layout.get("tube_wrist_dims")
         if ctx.state is None or not wrist_dims:
             return {}
-        import numpy as np
-        from batch_annotate import close_gaps, longest_run, smooth
-
-        S = ctx.state
-        fps = ctx.fps
-        layout = schema.state_layout
-        grip = layout.get("tube_gripper", 3)
-
-        # tube-held window: gripper deviates from its resting (open) value
-        g = S[:, grip]
-        rest = np.median(g[: max(5, len(g) // 20)])
-        held = np.abs(g - rest) > 0.35 * (np.percentile(g, 99) - np.percentile(g, 1) + 1e-9)
-        held = close_gaps(held, int(0.4 * fps))
-        a, b = longest_run(held)
-        if b - a < int(0.3 * fps):
-            return {}
-
-        # angular speed proxy = motion of the wrist dims; pour onset = first sustained spike
-        W = S[:, wrist_dims].astype(float)
-        W = (W - W.mean(0)) / (W.std(0) + 1e-9)
-        ang = smooth(np.linalg.norm(np.diff(W, axis=0, prepend=W[:1]), axis=1), 0.2 * fps)
-        seg = ang[a:b]
-        if len(seg) < 3:
-            return {}
-        spike = close_gaps(seg > np.percentile(seg, 70), int(0.3 * fps))
-        r0, _ = longest_run(spike)
-        frame = int(a + r0)
-
         pour = next((e for e in schema.events if e.type == "orientation_change"), None)
         if pour is None:
             return {}
-        return {pour.index: Candidate(frame, 6.0, self.name, "state", {"window": [int(a), int(b)]})}
+
+        import numpy as np
+        from batch_annotate import close_gaps, longest_run, smooth
+
+        cfg = {**DEFAULT_ORIENTATION_CFG, **schema.state_layout.get("p2_orientation", {})}
+        S = ctx.state
+        fps = ctx.fps
+        grip = schema.state_layout.get("tube_gripper", 3)
+
+        # tube-held window -> p1 (grasp) and p3 (release) proxies
+        g = S[:, grip]
+        rest = np.median(g[: max(5, len(g) // 20)])
+        rng = np.percentile(g, 99) - np.percentile(g, 1) + 1e-9
+        held = close_gaps(np.abs(g - rest) > 0.35 * rng, int(0.4 * fps))
+        a, b = longest_run(held)
+        if b - a < int(0.3 * fps):
+            return {}                                   # no clear held window -> abstain
+        p1, p3 = a, b + 1
+
+        # guarded search window: skip transport after grasp, stop before release
+        lo = p1 + max(int(cfg["transport_delay_s"] * fps), cfg["min_pour_after_grasp"])
+        hi = p3 - max(int(cfg["release_margin_s"] * fps), cfg["min_before_release"])
+        lo, hi = max(lo, 1), min(hi, len(S) - 2)
+        if hi - lo < cfg["hold_frames"] + 2:
+            return {}                                   # window too small -> abstain
+
+        # pick the wrist dim with the strongest sustained directional tilt in-window
+        best = None
+        for d in wrist_dims:
+            x = S[:, d].astype(float)
+            sm = smooth(x, cfg["smooth_s"] * fps)
+            sd = sm.std() + 1e-9
+            slope = np.diff(sm, prepend=sm[:1])
+            onset, strength, direction = _scan_tilt(sm, slope, sd, lo, hi, cfg, np)
+            if onset is not None and (best is None or strength > best[2]):
+                best = (d, onset, strength, direction)
+
+        if best is None:
+            return {}                                   # no clean onset -> abstain
+
+        d, onset, strength, direction = best
+        sigma = _sigma_from_strength(strength, cfg)
+        return {pour.index: Candidate(
+            int(onset), sigma, self.name, "state",
+            {"dim": int(d), "direction": int(direction), "strength": round(float(strength), 3),
+             "search_window": [int(lo), int(hi)], "held_window": [int(a), int(b)]},
+        )}
