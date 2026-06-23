@@ -276,6 +276,7 @@ bash data_annotation/scripts/run_gemini_stage_annotation.sh
 | `annotate_gui.py` | manual review GUI |
 | `docs/INSTALL_QWEN_LINUX.md` | current local Qwen setup notes |
 | `docs/P2_ORIENTATION_OPTIMIZATION.md` | notes on the experimental state-only p2 detector |
+| `ego_wipe_annotation/` | separate subproject — ego *wipe-tube* subtask annotation for raw Quest demo folders (signal + ego/fisheye visualization); see its README |
 
 ## Current Local Status
 

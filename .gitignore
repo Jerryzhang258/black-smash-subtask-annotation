@@ -52,3 +52,10 @@ __pycache__/
 mvt_annotations/
 mvt_annotations_vlm/
 mvt_annotations_human/
+
+# ---- ego wipe-tube: raw demo folders + outputs (data, never commit) ----
+demos/
+wipe_annotations/
+test_clean*/
+*.mp4
+*.pkl
