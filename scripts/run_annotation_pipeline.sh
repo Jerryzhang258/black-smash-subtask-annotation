@@ -20,17 +20,29 @@ FPS="${FPS:-30}"
 EPS="${EPS:-}"
 
 RUN_STATE="${RUN_STATE:-1}"
+RUN_CANDIDATES="${RUN_CANDIDATES:-1}"   # SIEVE step 1: state -> candidate windows
 RUN_QWEN="${RUN_QWEN:-1}"
 RUN_FUSED="${RUN_FUSED:-1}"
 RUN_QWEN_STAGE="${RUN_QWEN_STAGE:-1}"
+RUN_MEMORY="${RUN_MEMORY:-1}"           # SIEVE step 2: semantic keyframe memory
+RUN_VLA_EXPORT="${RUN_VLA_EXPORT:-1}"   # SIEVE step 3: VLA memory training samples
 RUN_VIZ="${RUN_VIZ:-1}"
 RUN_GEMINI="${RUN_GEMINI:-0}"
 
 STATE_OUT="${STATE_OUT:-${OUT_ROOT}/annotations_state_${DATASET_ID}}"
+CANDIDATES_OUT="${CANDIDATES_OUT:-${OUT_ROOT}/candidates_${DATASET_ID}}"
 QWEN_OUT="${QWEN_OUT:-${OUT_ROOT}/annotations_qwen_${DATASET_ID}}"
 FUSED_OUT="${FUSED_OUT:-${OUT_ROOT}/annotations_fused_${DATASET_ID}}"
 QWEN_STAGE_OUT_ROOT="${QWEN_STAGE_OUT_ROOT:-${OUT_ROOT}/annotations_qwen_stage_${DATASET_ID}}"
+MEMORY_OUT="${MEMORY_OUT:-${OUT_ROOT}/semantic_memory_${DATASET_ID}}"
+VLA_OUT="${VLA_OUT:-${OUT_ROOT}/vla_memory_${DATASET_ID}.jsonl}"
 VIZ_OUT="${VIZ_OUT:-${OUT_ROOT}/compare_tracks_${DATASET_ID}}"
+SCHEMA_PATH="${SCHEMA_PATH:-data_annotation/framework/schemas/black_smash.json}"
+MEMORY_CAMERAS="${MEMORY_CAMERAS:-camera0,camera1}"
+VLA_MODE="${VLA_MODE:-text-prefix}"
+VLA_STRIDE="${VLA_STRIDE:-30}"
+VLA_HORIZON="${VLA_HORIZON:-16}"
+VLA_MIN_CONFIDENCE="${VLA_MIN_CONFIDENCE:-0.0}"
 GEMINI_OUT_ROOT="${GEMINI_OUT_ROOT:-${OUT_ROOT}/annotations_gemini_stage_${DATASET_ID}}"
 GEMINI_JSONL="${GEMINI_JSONL:-}"
 STAGE_JSONL="${STAGE_JSONL:-}"
@@ -61,9 +73,12 @@ TASK_DESCRIPTION="${TASK_DESCRIPTION:-The robot should pour black powder from a 
 echo "dataset_id=${DATASET_ID}"
 echo "data_chunk=${DATA_CHUNK}"
 echo "state_out=${STATE_OUT}"
+echo "candidates_out=${CANDIDATES_OUT}"
 echo "qwen_out=${QWEN_OUT}"
 echo "fused_out=${FUSED_OUT}"
 echo "qwen_stage_out=${QWEN_STAGE_OUT_ROOT}"
+echo "memory_out=${MEMORY_OUT}"
+echo "vla_out=${VLA_OUT}"
 echo "viz_out=${VIZ_OUT}"
 
 eps_args=()
@@ -77,6 +92,14 @@ if [ "${RUN_STATE}" = "1" ]; then
     --meta "${META_PATH}" \
     --out "${STATE_OUT}" \
     --fps "${FPS}" \
+    "${eps_args[@]}"
+fi
+
+if [ "${RUN_CANDIDATES}" = "1" ]; then
+  "${PYTHON_BIN}" candidate_propose.py \
+    --state "${STATE_OUT}" \
+    --out "${CANDIDATES_OUT}" \
+    --schema "${SCHEMA_PATH}" \
     "${eps_args[@]}"
 fi
 
@@ -162,6 +185,31 @@ if [ "${RUN_QWEN_STAGE}" = "1" ]; then
   "${PYTHON_BIN}" data_annotation/tools/postprocess_qwen_stage_results.py "${latest_stage_run}"
   STAGE_JSONL="${latest_stage_run}/stage_annotations_normalized.jsonl"
   STAGE_LABEL="qwen-stage"
+fi
+
+if [ "${RUN_MEMORY}" = "1" ]; then
+  memory_stage_args=()
+  if [ -n "${STAGE_JSONL}" ] && [ -f "${STAGE_JSONL}" ]; then
+    memory_stage_args=(--stage-jsonl "${STAGE_JSONL}")
+  fi
+  "${PYTHON_BIN}" build_semantic_memory.py \
+    --fused "${FUSED_OUT}" \
+    --candidates "${CANDIDATES_OUT}" \
+    --out "${MEMORY_OUT}" \
+    --cameras "${MEMORY_CAMERAS}" \
+    "${memory_stage_args[@]}" \
+    "${eps_args[@]}"
+fi
+
+if [ "${RUN_VLA_EXPORT}" = "1" ]; then
+  "${PYTHON_BIN}" export_vla_memory.py \
+    --memory "${MEMORY_OUT}" \
+    --out "${VLA_OUT}" \
+    --mode "${VLA_MODE}" \
+    --stride "${VLA_STRIDE}" \
+    --horizon "${VLA_HORIZON}" \
+    --min-confidence "${VLA_MIN_CONFIDENCE}" \
+    "${eps_args[@]}"
 fi
 
 if [ "${RUN_VIZ}" = "1" ]; then

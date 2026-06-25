@@ -17,11 +17,12 @@
     "lift the pestle and return to rest"
   ],
   "events": [
-    {"id": "p1", "type": "gripper_close",      "name": "grasp_tube",    "params": {"arm": "tube"}},
-    {"id": "p2", "type": "orientation_change", "name": "start_pour",    "params": {"arm": "tube"}},
-    {"id": "p3", "type": "gripper_open",       "name": "release_tube",  "params": {"arm": "tube"}},
-    {"id": "p4", "type": "gripper_close",      "name": "grasp_pestle",  "params": {"arm": "pestle"}},
-    {"id": "p5", "type": "motion_regime",      "name": "start_grind",   "params": {"regime": "in_place_start"}},
-    {"id": "p6", "type": "motion_regime",      "name": "lift_pestle",   "params": {"regime": "end"}}
-  ]
+    {"id": "p1", "type": "gripper_close",      "name": "grasp_tube",    "params": {"arm": "tube"},   "window_half_s": 0.3, "state_confidence": 0.95},
+    {"id": "p2", "type": "orientation_change", "name": "start_pour",    "params": {"arm": "tube"},   "window_half_s": 1.5, "state_confidence": 0.45},
+    {"id": "p3", "type": "gripper_open",       "name": "release_tube",  "params": {"arm": "tube"},   "window_half_s": 0.3, "state_confidence": 0.93},
+    {"id": "p4", "type": "gripper_close",      "name": "grasp_pestle",  "params": {"arm": "pestle"}, "window_half_s": 0.3, "state_confidence": 0.95},
+    {"id": "p5", "type": "motion_regime",      "name": "start_grind",   "params": {"regime": "in_place_start"}, "window_half_s": 1.0, "state_confidence": 0.70},
+    {"id": "p6", "type": "motion_regime",      "name": "lift_pestle",   "params": {"regime": "end"}, "window_half_s": 1.0, "state_confidence": 0.70}
+  ],
+  "_sieve_note": "Optional per-event window_half_s / state_confidence drive candidate_propose.py (SIEVE step 1). They are read directly from this JSON; load_schema() ignores unknown keys, so the framework is unaffected."
 }

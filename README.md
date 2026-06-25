@@ -1,34 +1,46 @@
-# Proprioception-Grounded Subtask Segmentation
+# SIEVE — State-Proposed, VLM-Verified Semantic Keyframe Memory
 
 This repository labels long-horizon bimanual manipulation episodes for the
-black-smash task: pour black powder from a test tube into a mortar, then grasp
-the pestle and grind. Each episode is represented as 7 subtasks separated by 6
-critical points.
+black-smash task (pour black powder from a test tube into a mortar, then grasp
+the pestle and grind) and turns those labels into **semantic keyframe memory**
+for VLA policies. Each episode is 7 subtasks separated by 6 critical points.
 
-The current pipeline is proprioception-first, with Qwen used as a visual and
-semantic assistant rather than as the sole boundary source.
+The method, in one line:
 
-## Current Pipeline
+> **State proposes where to look. VLM verifies what matters. VLA remembers why it matters.**
+
+Proprioceptive state cheaply brackets each event into a high-recall *candidate
+window*; a VLM verifies the task-relevant ones and supplies semantics; the
+verified keyframes become memory entries (`fact` + `future relevance` +
+`confidence`) that condition a VLA policy. See [`docs/SIEVE.md`](docs/SIEVE.md)
+for the full creative-point → code map.
+
+## Pipeline
 
 The reproducible pipeline for one dataset is:
 
 ```text
-state boundaries -> Qwen critical-point check -> fused boundaries
-                 -> qwen-stage semantic layer -> same-image visualization
+state boundaries -> candidate windows -> Qwen critical-point check
+                 -> fused (verified) boundaries -> qwen-stage semantic layer
+                 -> semantic keyframe memory -> VLA memory export
+                 -> same-image visualization
 ```
 
-The four outputs are:
+The outputs are:
 
-| output | role |
+| output | SIEVE role |
 |---|---|
 | `annotations_state_<id>/` | state-only boundaries from `observation.state` |
-| `annotations_qwen_<id>/` | local Qwen visual critical-point proposal |
-| `annotations_fused_<id>/` | per-point fused boundary labels for training/review |
+| `candidates_<id>/` | **state-proposed candidate windows** (`lo/hi/center + event_hint + state_confidence`) |
+| `annotations_qwen_<id>/` | local Qwen visual critical-point proposal (window-bounded for p2) |
+| `annotations_fused_<id>/` | per-point **verified** boundary labels + confidence/review metadata |
 | `annotations_qwen_stage_<id>/` | Qwen semantic descriptions using fused boundaries |
+| `semantic_memory_<id>/` | **semantic keyframe memory** entries (visual + state-transition + fact + confidence) |
+| `vla_memory_<id>.jsonl` | **VLA training samples** (text-prefix memory; cumulative per timestep) |
 | `compare_tracks_<id>/` | same-image visual comparison: state / qwen / fused / qwen-stage |
 
-Generated annotation and visualization folders are ignored by git because they
-are regenerable data artifacts.
+Generated annotation, memory, and visualization folders are ignored by git
+because they are regenerable data artifacts.
 
 ## Why This Design
 
@@ -136,6 +148,43 @@ python visualize_annotation_tracks.py \
   --out compare_tracks_07
 ```
 
+## Semantic Keyframe Memory (SIEVE)
+
+The full pipeline produces the memory layer automatically. To run the three SIEVE
+steps standalone from existing annotation dirs:
+
+```bash
+# 1. state critical points -> candidate windows
+python candidate_propose.py --state annotations_state_07 --out candidates_07
+
+# 2. verified boundaries (+ optional qwen-stage semantics) -> semantic keyframe memory
+python build_semantic_memory.py \
+  --fused annotations_fused_07 \
+  --candidates candidates_07 \
+  --stage-jsonl annotations_qwen_stage_07/run_xxx/stage_annotations_normalized.jsonl \
+  --out semantic_memory_07
+
+# 3. semantic memory -> VLA training samples (cumulative text-prefix memory)
+python export_vla_memory.py --memory semantic_memory_07 --out vla_memory_07.jsonl
+```
+
+`build_semantic_memory.py` degrades gracefully: with no `--stage-jsonl`, `memory_fact`
+/ `future_relevance` are templated from the task taxonomy, so it runs without a model.
+Add `--dump-frames --data <chunk-000>` to decode the referenced keyframes.
+
+A no-raw-data regression covering all three steps runs on `examples/`:
+
+```bash
+python data_annotation/framework/tests/test_semantic_memory.py
+```
+
+To skip the memory layer (boundaries only), set `RUN_CANDIDATES=0 RUN_MEMORY=0
+RUN_VLA_EXPORT=0` on the pipeline command.
+
+The parts that need raw `observation.state` / camera parquet / the Qwen server —
+and how to validate each on the server — are listed in
+[`docs/SERVER_VERIFICATION.md`](docs/SERVER_VERIFICATION.md).
+
 ## Optional Gemini Experiment
 
 Gemini support remains available under `data_annotation/`, but it is not the
@@ -167,13 +216,18 @@ bash data_annotation/scripts/run_gemini_stage_annotation.sh
 | file | role |
 |---|---|
 | `batch_annotate.py` | state-only segmentation |
-| `vlm_annotate.py` | local Qwen critical-point annotation and p2 temporal refinement |
+| `candidate_propose.py` | **SIEVE 1**: state critical points -> high-recall candidate windows |
+| `vlm_annotate.py` | local Qwen critical-point annotation and p2 temporal refinement (window-bounded verification) |
 | `fuse_annotations.py` | fused labels plus disagreement/review metadata |
+| `build_semantic_memory.py` | **SIEVE 2**: verified boundaries + qwen-stage semantics -> semantic keyframe memory |
+| `export_vla_memory.py` | **SIEVE 3**: semantic memory -> VLA training samples (text-prefix / hybrid) |
 | `data_annotation/tools/qwen_stage_annotation_demo.py` | qwen-stage semantic layer, optionally fixed to fused boundaries |
+| `data_annotation/framework/` | confidence-arbitration fusion (SIEVE "Confidence-Aware State-VLM Fusion") |
 | `visualize_annotation_tracks.py` | same-image comparison for state / qwen / fused / stage rows |
 | `scripts/run_annotation_pipeline.sh` | current end-to-end pipeline |
 | `scripts/start_vllm.sh` | local Qwen2.5-VL-7B-AWQ vLLM launcher |
 | `annotate_gui.py` | manual review GUI |
+| `docs/SIEVE.md` | creative-point -> code map for the SIEVE framing |
 | `docs/INSTALL_QWEN_LINUX.md` | current local Qwen setup notes |
 
 ## Current Local Status

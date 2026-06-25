@@ -38,6 +38,11 @@ compare_tracks*.log
 annotation_comparison_analysis.json
 gemini_stage_annotation_results*/
 
+# ---- SIEVE memory-layer outputs (regenerable, not pushed) ----
+candidates_*/
+semantic_memory_*/
+vla_memory_*.jsonl
+
 # ---- local secrets ----
 data_annotation/config/api_env.local.sh
 .env

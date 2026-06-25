@@ -1,5 +1,10 @@
 # Confidence-Arbitration Annotation Framework
 
+> In SIEVE terms (see [`../../docs/SIEVE.md`](../../docs/SIEVE.md)) this is
+> **creative point 5, "Confidence-Aware State-VLM Fusion"** — already implemented
+> here; the rest of SIEVE (candidate windows, semantic memory, VLA export) is a
+> thin layer on top and does not change this framework.
+
 A schema-driven, detector-based replacement for the hand-written fusion logic in
 the root `fuse_annotations.py`. The goal is to turn "a script for the black-smash
 task" into "a reusable method": the task taxonomy lives in a JSON schema, boundary
