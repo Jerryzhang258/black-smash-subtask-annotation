@@ -22,10 +22,44 @@ Usage:
 """
 import os, json, glob, argparse
 import numpy as np
-from batch_annotate import CRIT_NAMES
-from vlm_annotate import subtasks_from_cps, enforce_order
+from batch_annotate import CRIT_NAMES, LABELS
 
 OWNER = ["state", "vlm", "state", "state", "state", "state"]   # value source per point
+
+
+def enforce_order(cps, T, flags):
+    cps = [max(1, min(T - 2, int(c))) for c in cps]
+    for i in range(1, len(cps)):
+        if cps[i] <= cps[i - 1]:
+            cps[i] = cps[i - 1] + 1
+            flags.append("nudged p%d for ordering" % (i + 1))
+    if cps[-1] > T - 2:
+        cps[-1] = T - 2
+        for i in range(len(cps) - 2, -1, -1):
+            if cps[i] >= cps[i + 1]:
+                cps[i] = cps[i + 1] - 1
+        if cps[0] < 1:
+            flags.append("could not fit ordered points in episode")
+    return cps
+
+
+def subtasks_from_cps(cps, T, fps):
+    starts = [0] + list(cps)
+    out = []
+    for i, label in enumerate(LABELS):
+        start = starts[i]
+        end = starts[i + 1] - 1 if i < len(LABELS) - 1 else T - 1
+        out.append({
+            "subtask_id": i,
+            "label": label,
+            "start_frame": start,
+            "end_frame": end,
+            "start_t": round(start / fps, 2),
+            "end_t": round(end / fps, 2),
+            "n_frames": end - start + 1,
+            "dur_s": round((end - start + 1) / fps, 2),
+        })
+    return out
 
 
 def load(d, ep):

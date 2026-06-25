@@ -12,7 +12,7 @@ Examples:
   python visualize_annotation_tracks.py \
     --data /home/hillbot/black_smash_07/data/chunk-000 \
     --state annotations_state_07 \
-    --qwen annotations_qwen_07 \
+    --qwen qwen_local_verify_07/verified_annotations \
     --fused annotations_fused_07 \
     --out compare_tracks_07
 
@@ -29,9 +29,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from PIL import Image, ImageDraw, ImageFont
-
-from vlm_annotate import enh
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
 
 SUBTASK_COLORS = [
@@ -64,6 +62,20 @@ def font(size):
         if os.path.exists(p):
             return ImageFont.truetype(p, size)
     return ImageFont.load_default()
+
+
+def enh(im, crop=0.6):
+    if crop < 1.0:
+        w, h = im.size
+        cw, ch = int(w * crop), int(h * crop)
+        im = im.crop(((w - cw) // 2, (h - ch) // 2, (w + cw) // 2, (h + ch) // 2))
+    arr = np.asarray(im.convert("RGB")).astype(np.float32)
+    mean = arr.reshape(-1, 3).mean(0) + 1e-6
+    arr = np.clip(arr * (mean.mean() / mean), 0, 255)
+    lo, hi = np.percentile(arr, 2), np.percentile(arr, 98)
+    arr = np.clip((arr - lo) / (hi - lo + 1e-6), 0, 1)
+    arr = (arr ** 0.8) * 255
+    return ImageEnhance.Contrast(Image.fromarray(arr.astype(np.uint8))).enhance(1.25)
 
 
 def load_doc(directory, ep):

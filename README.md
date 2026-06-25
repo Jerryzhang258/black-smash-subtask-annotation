@@ -13,19 +13,19 @@ semantic assistant rather than as the sole boundary source.
 The reproducible pipeline for one dataset is:
 
 ```text
-state boundaries -> Qwen critical-point check -> fused boundaries
+state boundaries -> visual p2/local checks -> fused boundaries
                  -> qwen-stage semantic layer -> same-image visualization
 ```
 
-The four outputs are:
+The main outputs are:
 
 | output | role |
 |---|---|
 | `annotations_state_<id>/` | state-only boundaries from `observation.state` |
-| `annotations_qwen_<id>/` | local Qwen visual critical-point proposal |
+| `qwen_local_verify_<id>/` | Qwen local visual verifier evidence and p2 proposal |
 | `annotations_fused_<id>/` | per-point fused boundary labels for training/review |
 | `annotations_qwen_stage_<id>/` | Qwen semantic descriptions using fused boundaries |
-| `compare_tracks_<id>/` | same-image visual comparison: state / qwen / fused / qwen-stage |
+| `compare_tracks_<id>/` | same-image visual comparison: state / verifier / fused / qwen-stage |
 
 Generated annotation and visualization folders are ignored by git because they
 are regenerable data artifacts.
@@ -36,6 +36,13 @@ State signals are reliable for gripper and motion boundaries, while camera-only
 boundary localization is coarse on this low-light fisheye footage. The fused
 labels therefore keep state as the stable skeleton and let Qwen help with the
 visual `p2_start_pour` event and with semantic review.
+
+The removed Qwen raw pass asked the VLM to predict all 6 critical points over
+the whole episode. It was not reliable enough to keep as a pipeline path: it
+often collapsed later critical points together or drifted far down the episode.
+The current approach is a local verifier: start from the state critical points,
+show Qwen a small contact sheet around one event, and only allow a conservative
+local correction, mainly for `p2_start_pour`.
 
 `qwen-stage` is not a replacement for `fused`. It uses fused critical points as
 fixed boundaries and asks Qwen to describe each interval with a stage name,
@@ -88,34 +95,61 @@ controlled by `DATASET_ID`, so use a meaningful id for each dataset:
 
 ```text
 annotations_state_<id>/
-annotations_qwen_<id>/
+qwen_local_verify_<id>/
 annotations_fused_<id>/
 annotations_qwen_stage_<id>/
 compare_tracks_<id>/
 ```
 
 For training, use `annotations_fused_<id>/` as the boundary labels. For semantic
-stage descriptions, use `annotations_qwen_stage_<id>/`. Pure Qwen and Gemini are
-kept only as comparison baselines.
+stage descriptions, use `annotations_qwen_stage_<id>/`. Gemini is kept only as
+an optional comparison baseline.
+
+## Current Best Practice
+
+Use this hierarchy:
+
+```text
+state cps as the skeleton
+Qwen3-VL-8B local verifier for p2_start_pour only
+qwen-stage for interval semantics after fused boundaries are fixed
+```
+
+The local verifier is much more stable than raw global VLM boundary prediction
+because it turns the VLM task from global time localization into local visual
+choice.
+
+Recommended conservative fusion rule for the verifier:
+
+```text
+if abs(p2_delta) <= 20 frames: accept automatically
+if abs(p2_delta) > 20 frames: reject and keep state
+```
+
+The verifier should keep `p1`, `p3`, `p4`, `p5`, and `p6` as state-owned by
+default. Qwen evidence for those points is still useful for review, but should
+not automatically overwrite state boundaries.
 
 ## Setup
 
-Start the local Qwen2.5-VL-7B-AWQ server:
-
-```bash
-./scripts/start_vllm.sh ~/models/Qwen2.5-VL-7B-Instruct-AWQ
-```
-
-The server exposes an OpenAI-compatible endpoint at:
+The Qwen server exposes an OpenAI-compatible endpoint at:
 
 ```text
 http://localhost:8000/v1
 ```
 
-For Linux + RTX 5080 setup details, see
-[`docs/INSTALL_QWEN_LINUX.md`](docs/INSTALL_QWEN_LINUX.md).
+For the current local-verifier pipeline, Qwen3-VL-8B-Instruct-GGUF Q4_K_M was
+served with llama.cpp on the RTX 5080:
 
-In another terminal, confirm the OpenAI-compatible vLLM endpoint is reachable:
+```text
+model: /home/hillbot/models/Qwen3-VL-8B-Instruct-GGUF-Q4_K_M/Qwen3VL-8B-Instruct-Q4_K_M.gguf
+mmproj: /home/hillbot/models/Qwen3-VL-8B-Instruct-GGUF-Q4_K_M/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf
+endpoint: http://localhost:8000/v1
+served name: qwen
+ctx: 32768
+```
+
+In another terminal, confirm the OpenAI-compatible endpoint is reachable:
 
 ```bash
 curl http://localhost:8000/v1/models
@@ -172,10 +206,6 @@ bash scripts/run_annotation_pipeline.sh
 # skip qwen-stage and draw only state / qwen / fused
 RUN_QWEN_STAGE=0 DATASET_ROOT=~/black_smash_current DATASET_ID=current \
 bash scripts/run_annotation_pipeline.sh
-
-# disable state-guided p2 temporal refinement for a pure-Qwen baseline
-QWEN_P2_HISTORY=0 DATASET_ROOT=~/black_smash_current DATASET_ID=current \
-bash scripts/run_annotation_pipeline.sh
 ```
 
 ## Check Outputs
@@ -215,12 +245,61 @@ Each fused JSON should contain 6 ordered critical points and 7 subtasks. Each
 qwen-stage normalized JSONL row should contain 7 semantic stages fixed to the
 fused boundaries.
 
+## Qwen Local Verifier Results
+
+The recent 8B local-verifier runs used these parameters on datasets 05 and 06:
+
+```text
+model: Qwen3-VL-8B-Instruct-GGUF:Q4_K_M
+window: +/- 2.0s around the state critical point
+candidates: 7 frames
+image size: 192
+automatic move target: p2_start_pour only
+max accepted move in the experiment: 1.0s
+```
+
+Dataset 07 was run after tightening the p2 prompt and reducing the automatic
+move limit to 0.67s, or about 20 frames. This is the preferred setting for the
+next pass because it blocks the more aggressive early-pour moves.
+
+Outputs were written outside the repository:
+
+```text
+/tmp/qwen_local_verify_05_full
+/tmp/qwen_local_verify_06_full
+/tmp/qwen_local_verify_07_opt
+```
+
+Run summary:
+
+| dataset | episodes | p2 accepted | p2 kept | p2 large rejected | accepted mean delta | accepted median delta | accepted range |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 05 | 232 | 154 | 73 | 5 | -7.23 frames | -7.5 frames | -25 to +12 |
+| 06 | 50 | 37 | 9 | 4 | -12.76 frames | -15 frames | -27 to +6 |
+| 07 opt | 100 | 66 | 31 | 3 | -14.26 frames | -20 frames | -20 to +7 |
+
+Compared with the removed 7B raw critical-point baseline, the local verifier is
+much more stable for `p2_start_pour`:
+
+| dataset | method | p2 mean absolute delta vs state | p2 large drift |
+|---|---|---:|---:|
+| 05 | Qwen2.5-VL-7B raw global cps | 55.1 frames | 52 episodes over 60 frames |
+| 05 | Qwen3-VL-8B local verifier | 6.6 frames | 0 episodes over 60 frames |
+| 06 | Qwen2.5-VL-7B raw global cps | 43.2 frames | 5 episodes over 60 frames |
+| 06 | Qwen3-VL-8B local verifier | 10.4 frames | 0 episodes over 60 frames |
+
+The main caveat is that the 8B verifier tends to move `p2_start_pour` earlier.
+Before using verifier outputs as final training labels, review examples with
+`delta <= -20` and all `move_too_large` rejections. These are the likely cases
+where Qwen may be selecting early tilt or first powder trace instead of the
+stable pour onset.
+
 ## Visualization
 
 `compare_tracks_<id>/index.html` shows one row each for:
 
 ```text
-state / qwen / fused / qwen-stage
+state / verifier / fused / qwen-stage
 ```
 
 You can also call the visualizer directly:
@@ -229,7 +308,7 @@ You can also call the visualizer directly:
 python visualize_annotation_tracks.py \
   --data ~/black_smash_current/data/chunk-000 \
   --state annotations_state_current \
-  --qwen annotations_qwen_current \
+  --qwen qwen_local_verify_current/verified_annotations \
   --fused annotations_fused_current \
   --stage-jsonl annotations_qwen_stage_current/run_xxx/stage_annotations_normalized.jsonl \
   --stage-label qwen-stage \
@@ -267,23 +346,21 @@ bash data_annotation/scripts/run_gemini_stage_annotation.sh
 | file | role |
 |---|---|
 | `batch_annotate.py` | state-only segmentation |
-| `vlm_annotate.py` | local Qwen critical-point annotation and p2 temporal refinement |
+| `qwen_local_verify.py` | Qwen local verifier for visual p2 review and conservative proposals |
 | `fuse_annotations.py` | fused labels plus disagreement/review metadata |
 | `data_annotation/tools/qwen_stage_annotation_demo.py` | qwen-stage semantic layer, optionally fixed to fused boundaries |
 | `visualize_annotation_tracks.py` | same-image comparison for state / qwen / fused / stage rows |
 | `scripts/run_annotation_pipeline.sh` | current end-to-end pipeline |
-| `scripts/start_vllm.sh` | local Qwen2.5-VL-7B-AWQ vLLM launcher |
 | `annotate_gui.py` | manual review GUI |
-| `docs/INSTALL_QWEN_LINUX.md` | current local Qwen setup notes |
 | `docs/P2_ORIENTATION_OPTIMIZATION.md` | notes on the experimental state-only p2 detector |
 | `ego_wipe_annotation/` | separate subproject — ego *wipe-tube* subtask annotation for raw Quest demo folders (signal + ego/fisheye visualization); see its README |
 
 ## Current Local Status
 
-The latest local pipeline is configured for Qwen2.5-VL-7B-AWQ served by vLLM as
-`qwen`. The latest full regeneration completed for datasets 05, 06, and 07,
-including state, qwen, fused, qwen-stage, and same-image visualizations. To
-refresh the artifacts, rerun the pipeline commands above.
+Qwen3-VL-8B local verifier has completed for datasets 05, 06, and 07. Dataset
+07 used the tightened p2 prompt and `max_move_s=0.67`; this should be treated as
+the preferred verifier setting. The Qwen3-VL-8B server is OpenAI-compatible as
+`qwen` at `http://localhost:8000/v1`.
 
 An experimental state-orientation detector for `p2_start_pour` was tested but is
 not part of the production pipeline. It can detect early tube motion instead of

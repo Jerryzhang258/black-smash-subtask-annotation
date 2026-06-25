@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end annotation pipeline for one black_smash dataset:
-# state-only -> Qwen critical points -> fused boundaries -> qwen-stage semantics
+# state-only -> Qwen visual check -> fused boundaries -> qwen-stage semantics
 # -> multi-track visualization.
 #
 # Example:
@@ -27,7 +27,7 @@ RUN_VIZ="${RUN_VIZ:-1}"
 RUN_GEMINI="${RUN_GEMINI:-0}"
 
 STATE_OUT="${STATE_OUT:-${OUT_ROOT}/annotations_state_${DATASET_ID}}"
-QWEN_OUT="${QWEN_OUT:-${OUT_ROOT}/annotations_qwen_${DATASET_ID}}"
+QWEN_VERIFY_OUT="${QWEN_VERIFY_OUT:-${OUT_ROOT}/qwen_local_verify_${DATASET_ID}}"
 FUSED_OUT="${FUSED_OUT:-${OUT_ROOT}/annotations_fused_${DATASET_ID}}"
 QWEN_STAGE_OUT_ROOT="${QWEN_STAGE_OUT_ROOT:-${OUT_ROOT}/annotations_qwen_stage_${DATASET_ID}}"
 VIZ_OUT="${VIZ_OUT:-${OUT_ROOT}/compare_tracks_${DATASET_ID}}"
@@ -36,19 +36,16 @@ GEMINI_JSONL="${GEMINI_JSONL:-}"
 STAGE_JSONL="${STAGE_JSONL:-}"
 STAGE_LABEL="${STAGE_LABEL:-qwen-stage}"
 
-QWEN_BACKEND="${QWEN_BACKEND:-openai}"
 QWEN_MODEL="${QWEN_MODEL:-qwen}"
 QWEN_BASE_URL="${QWEN_BASE_URL:-http://localhost:8000/v1}"
 QWEN_API_KEY="${QWEN_API_KEY:-EMPTY}"
-QWEN_CAM="${QWEN_CAM:-observation.images.camera1}"
-QWEN_N_FRAMES="${QWEN_N_FRAMES:-32}"
-QWEN_SIZE="${QWEN_SIZE:-256}"
-QWEN_CROP="${QWEN_CROP:-0.6}"
-QWEN_FINE="${QWEN_FINE:-1}"
-QWEN_P2_HISTORY="${QWEN_P2_HISTORY:-1}"
-QWEN_P2_HISTORY_WINDOW_S="${QWEN_P2_HISTORY_WINDOW_S:-3.0}"
-QWEN_P2_HISTORY_FRAMES="${QWEN_P2_HISTORY_FRAMES:-15}"
-QWEN_MAX_NEW_TOKENS="${QWEN_MAX_NEW_TOKENS:-384}"
+QWEN_VERIFY_WINDOW_S="${QWEN_VERIFY_WINDOW_S:-2.0}"
+QWEN_VERIFY_MAX_MOVE_S="${QWEN_VERIFY_MAX_MOVE_S:-0.67}"
+QWEN_VERIFY_CANDIDATES="${QWEN_VERIFY_CANDIDATES:-7}"
+QWEN_VERIFY_SIZE="${QWEN_VERIFY_SIZE:-192}"
+QWEN_VERIFY_CROP="${QWEN_VERIFY_CROP:-0.6}"
+QWEN_VERIFY_MAX_TOKENS="${QWEN_VERIFY_MAX_TOKENS:-320}"
+QWEN_VERIFY_CAMERAS="${QWEN_VERIFY_CAMERAS:-observation.images.camera0,observation.images.camera1}"
 QWEN_STAGE_MODEL="${QWEN_STAGE_MODEL:-${QWEN_MODEL}}"
 QWEN_STAGE_FRAME_SAMPLING="${QWEN_STAGE_FRAME_SAMPLING:-uniform7}"
 QWEN_STAGE_SIGNAL_DETAIL="${QWEN_STAGE_SIGNAL_DETAIL:-compact}"
@@ -61,7 +58,7 @@ TASK_DESCRIPTION="${TASK_DESCRIPTION:-The robot should pour black powder from a 
 echo "dataset_id=${DATASET_ID}"
 echo "data_chunk=${DATA_CHUNK}"
 echo "state_out=${STATE_OUT}"
-echo "qwen_out=${QWEN_OUT}"
+echo "qwen_verify_out=${QWEN_VERIFY_OUT}"
 echo "fused_out=${FUSED_OUT}"
 echo "qwen_stage_out=${QWEN_STAGE_OUT_ROOT}"
 echo "viz_out=${VIZ_OUT}"
@@ -80,37 +77,34 @@ if [ "${RUN_STATE}" = "1" ]; then
     "${eps_args[@]}"
 fi
 
-if [ "${RUN_QWEN}" = "1" ]; then
-  qwen_fine_args=(--fine)
-  if [ "${QWEN_FINE}" = "0" ]; then
-    qwen_fine_args=(--no-fine)
+FUSE_VLM_OUT="${QWEN_VERIFY_OUT}/verified_annotations"
+FUSE_TOL_S_DEFAULT="${FUSE_TOL_S:-${QWEN_VERIFY_MAX_MOVE_S}}"
+
+if [ "${RUN_QWEN}" = "0" ]; then
+  echo "RUN_QWEN=0: reusing ${FUSE_VLM_OUT}"
+else
+  verifier_eps_args=()
+  if [ -n "${EPS}" ]; then
+    verifier_eps_args=(--eps "${EPS}")
   fi
-  qwen_p2_args=()
-  if [ "${QWEN_P2_HISTORY}" = "1" ]; then
-    qwen_p2_args=(
-      --state-ref "${STATE_OUT}"
-      --p2-history
-      --p2-history-window-s "${QWEN_P2_HISTORY_WINDOW_S}"
-      --p2-history-frames "${QWEN_P2_HISTORY_FRAMES}"
-    )
-  fi
-  "${PYTHON_BIN}" vlm_annotate.py \
-    --backend "${QWEN_BACKEND}" \
+  "${PYTHON_BIN}" qwen_local_verify.py \
+    --data "${DATA_CHUNK}" \
+    --state "${STATE_OUT}" \
+    --out "${QWEN_VERIFY_OUT}" \
+    --meta "${META_PATH}" \
+    --fps "${FPS}" \
     --model "${QWEN_MODEL}" \
     --base-url "${QWEN_BASE_URL}" \
     --api-key "${QWEN_API_KEY}" \
-    --data "${DATA_CHUNK}" \
-    --meta "${META_PATH}" \
-    --out "${QWEN_OUT}" \
-    --fps "${FPS}" \
-    --cam "${QWEN_CAM}" \
-    --n-frames "${QWEN_N_FRAMES}" \
-    --size "${QWEN_SIZE}" \
-    --crop "${QWEN_CROP}" \
-    --max-new-tokens "${QWEN_MAX_NEW_TOKENS}" \
-    "${qwen_fine_args[@]}" \
-    "${qwen_p2_args[@]}" \
-    "${eps_args[@]}"
+    --cameras "${QWEN_VERIFY_CAMERAS}" \
+    --window-s "${QWEN_VERIFY_WINDOW_S}" \
+    --max-move-s "${QWEN_VERIFY_MAX_MOVE_S}" \
+    --candidates "${QWEN_VERIFY_CANDIDATES}" \
+    --size "${QWEN_VERIFY_SIZE}" \
+    --crop "${QWEN_VERIFY_CROP}" \
+    --max-tokens "${QWEN_VERIFY_MAX_TOKENS}" \
+    --move-only-p2 \
+    "${verifier_eps_args[@]}"
 fi
 
 if [ "${RUN_GEMINI}" = "1" ]; then
@@ -128,10 +122,10 @@ fi
 if [ "${RUN_FUSED}" = "1" ]; then
   "${PYTHON_BIN}" fuse_annotations.py \
     --state "${STATE_OUT}" \
-    --vlm "${QWEN_OUT}" \
+    --vlm "${FUSE_VLM_OUT}" \
     --out "${FUSED_OUT}" \
     --fps "${FPS}" \
-    --tol-s "${FUSE_TOL_S:-0.5}"
+    --tol-s "${FUSE_TOL_S_DEFAULT}"
 fi
 
 if [ "${RUN_QWEN_STAGE}" = "1" ]; then
@@ -175,7 +169,7 @@ if [ "${RUN_VIZ}" = "1" ]; then
   "${PYTHON_BIN}" visualize_annotation_tracks.py \
     --data "${DATA_CHUNK}" \
     --state "${STATE_OUT}" \
-    --qwen "${QWEN_OUT}" \
+    --qwen "${FUSE_VLM_OUT}" \
     --fused "${FUSED_OUT}" \
     --out "${VIZ_OUT}" \
     --fps "${FPS}" \

@@ -33,6 +33,8 @@ annotations_*/
 annotations_*.log
 compare_tracks*/
 compare_tracks*.log
+qwen_raw_understanding*/
+qwen_local_verify*/
 *_comparison_index.html
 *_comparison_summary.json
 annotation_comparison_analysis.json
