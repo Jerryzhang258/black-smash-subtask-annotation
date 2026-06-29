@@ -315,6 +315,170 @@ python visualize_annotation_tracks.py \
   --out compare_tracks_current
 ```
 
+## EventVLA 关键帧训练流程
+
+EventVLA 训练需要在每条 episode 的 `meta/episodes.jsonl` 里提供关键帧元数据：
+
+```json
+{
+  "episode_index": 0,
+  "length": 774,
+  "keyframe_steps": [184, 215, 281, 490, 545, 680]
+}
+```
+
+当前 black-smash 标注流程已经会为每条 episode 预测 6 个关键点：
+
+```text
+p1 grasp_tube
+p2 start_pour
+p3 release_tube
+p4 grasp_pestle
+p5 start_grind
+p6 lift_pestle
+```
+
+这些关键点可以直接导出为 EventVLA 使用的 `keyframe_steps`。
+
+### 第一轮弱教师标注
+
+建议第一轮先用本地 state 标注。它只读取 `observation.state`，不需要 Qwen，也不需要解码图像，
+速度快、稳定，适合作为第一轮弱监督 teacher：
+
+```bash
+cd /home/hillbot/black-smash-subtask-annotation
+
+/home/hillbot/miniforge3/envs/qwenvl/bin/python batch_annotate.py \
+  --data /home/hillbot/black_smash_05/data/chunk-000 \
+  --meta /home/hillbot/black_smash_05/meta/tasks.jsonl \
+  --out annotations_state_05_eventvla_export \
+  --fps 30
+```
+
+然后把这些关键点写入已经转换好的 EventVLA 数据集：
+
+```bash
+/home/hillbot/miniforge3/envs/qwenvl/bin/python export_eventvla_keyframes.py \
+  --annotations annotations_state_05_eventvla_export \
+  --dataset /home/hillbot/black_smash_05_eventvla \
+  --in-place \
+  --points all
+```
+
+这会更新：
+
+```text
+/home/hillbot/black_smash_05_eventvla/meta/episodes.jsonl
+```
+
+并自动保留一份备份：
+
+```text
+/home/hillbot/black_smash_05_eventvla/meta/episodes.jsonl.bak
+```
+
+state 信号对夹爪开合、抓取、释放、研磨开始/结束这类边界比较稳定。它不是完美标注，
+尤其是 `p2_start_pour` 这种视觉语义更强的点，但已经足够作为 EventVLA 第一轮训练的弱
+teacher。
+
+### EventVLA 课程学习
+
+EventVLA 可以先使用 `episodes.jsonl` 里的 teacher keyframes，然后在训练过程中逐步切换到
+模型自己的关键帧预测。第一轮推荐使用下面的配置：
+
+```yaml
+framework:
+  memory_buffer:
+    keyframe_loss_weight: 0.5
+    keyframe_positive_weight: 7.0
+    keyframe_threshold: 0.5
+    keyframe_predict_mode: chunk_future
+
+    keyframe_train_memory_source: teacher_to_predict
+    keyframe_eval_memory_source: predict
+    keyframe_train_memory_schedule: teacher_to_predict
+
+    keyframe_schedule_warmup_steps: 10000
+    keyframe_schedule_transition_steps: 30000
+    keyframe_schedule_teacher_prob_start: 1.0
+    keyframe_schedule_teacher_prob_end: 0.0
+```
+
+含义是：
+
+```text
+0 - 10k steps:
+  主要使用 episodes.jsonl 里的 teacher keyframes
+
+10k - 40k steps:
+  逐渐混合 teacher keyframes 和模型自己预测的 keyframes
+
+40k steps 之后:
+  主要使用模型自己预测的 keyframes
+```
+
+这样可以避免训练一开始就用随机预测出来的关键帧污染 memory，同时又能让模型逐渐学会依赖
+自己的 keyframe predictor。
+
+`keyframe_loss_weight` 控制关键帧预测 head 的 loss 占比。如果 state 标注被当作弱标签，
+建议第一轮用 `0.5`，不要直接用太强的 `1.0`。但第一轮也不要设成 `0`，否则 keyframe head
+学不到有效预测，后面的 `predict` 阶段就没有意义。
+
+`keyframe_positive_weight: 7.0` 用来处理关键帧稀疏导致的正负样本不平衡。除非训练日志显示
+关键帧误报或漏报特别严重，否则先保持这个值。
+
+这里要注意：EventVLA 配置里的 `predict` 指的是 EventVLA 模型自己的 keyframe head 预测关键帧，
+不是调用本仓库里的外部 Qwen 标注脚本。Qwen local verifier 是离线标注/修正工具，可以在训练前
+改进 `episodes.jsonl`，但不会在 EventVLA trainer 里面一边训练一边被调用。
+
+### 可选 Qwen 精修
+
+如果后续需要更好的标签，可以跑完整标注流程，让 Qwen local verifier 对 state 边界做局部视觉校验：
+
+```bash
+PYTHON_BIN=/home/hillbot/miniforge3/envs/qwenvl/bin/python \
+DATASET_ROOT=/home/hillbot/black_smash_05 \
+DATASET_ID=05_eventvla_full \
+RUN_QWEN_STAGE=0 \
+RUN_VIZ=0 \
+bash scripts/run_annotation_pipeline.sh
+```
+
+然后不要再从 `annotations_state_*` 导出，而是从 fused 标签导出：
+
+```bash
+/home/hillbot/miniforge3/envs/qwenvl/bin/python export_eventvla_keyframes.py \
+  --annotations annotations_fused_05_eventvla_full \
+  --dataset /home/hillbot/black_smash_05_eventvla \
+  --in-place \
+  --points all
+```
+
+这一步会慢很多，因为 Qwen 会逐条 episode 做局部视觉校验。建议把它当作第二阶段精修，
+不要把它作为第一轮训练的前置阻塞。
+
+第一轮 checkpoint 训练出比较合理的关键帧预测能力之后，第二轮可以更依赖模型自己的预测：
+
+```yaml
+framework:
+  memory_buffer:
+    keyframe_train_memory_source: predict
+    keyframe_train_memory_schedule: predict
+    keyframe_eval_memory_source: predict
+    keyframe_loss_weight: 0.2
+```
+
+推荐总流程：
+
+```text
+1. 先把 image-only LeRobot 数据转换成 EventVLA 需要的视频版 LeRobot。
+2. 用 state 信号生成第一版 critical points。
+3. 把 critical points 导出为 episodes.jsonl 里的 keyframe_steps。
+4. 用 teacher_to_predict 课程学习训练 EventVLA。
+5. 可选：再跑 Qwen/fused 标注，对 labels 做精修后继续训练或微调。
+6. 后续训练轮次逐渐更多依赖 predict，也就是模型自己的关键帧预测。
+```
+
 ## Optional Gemini Experiment
 
 Gemini support remains available under `data_annotation/`, but it is not the
@@ -348,6 +512,7 @@ bash data_annotation/scripts/run_gemini_stage_annotation.sh
 | `batch_annotate.py` | state-only segmentation |
 | `qwen_local_verify.py` | Qwen local verifier for visual p2 review and conservative proposals |
 | `fuse_annotations.py` | fused labels plus disagreement/review metadata |
+| `export_eventvla_keyframes.py` | export critical points to EventVLA `keyframe_steps` |
 | `data_annotation/tools/qwen_stage_annotation_demo.py` | qwen-stage semantic layer, optionally fixed to fused boundaries |
 | `visualize_annotation_tracks.py` | same-image comparison for state / qwen / fused / stage rows |
 | `scripts/run_annotation_pipeline.sh` | current end-to-end pipeline |
