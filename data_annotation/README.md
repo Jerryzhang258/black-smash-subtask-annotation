@@ -4,7 +4,7 @@ This directory contains optional stage-annotation utilities. The repository's
 main pipeline is documented in the root `README.md`:
 
 ```text
-state -> qwen critical points -> fused -> qwen-stage -> visualization
+state -> Qwen local verifier -> fused -> qwen-stage -> visualization
 ```
 
 The key script here is `tools/qwen_stage_annotation_demo.py`. Despite the
@@ -65,7 +65,7 @@ The normalized stage JSONL can be drawn as the fourth visualization row:
 python visualize_annotation_tracks.py \
   --data /home/hillbot/black_smash_07/data/chunk-000 \
   --state annotations_state_07 \
-  --qwen annotations_qwen_07 \
+  --qwen qwen_local_verify_07/verified_annotations \
   --fused annotations_fused_07 \
   --stage-jsonl "$RUN_DIR/stage_annotations_normalized.jsonl" \
   --stage-label qwen-stage \
