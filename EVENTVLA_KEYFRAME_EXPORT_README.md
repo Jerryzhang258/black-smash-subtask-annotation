@@ -235,7 +235,7 @@ download HF dataset -> verify keyframe_steps -> train EventVLA
 
 ```text
 https://github.com/wjstx0425/EventVLA-UMI
-branch: server/black-smash-eventvla-h100
+branch: main
 ```
 
 训练时不需要重新跑本仓库的标注脚本，除非你要从 raw 数据重新生成标签。
